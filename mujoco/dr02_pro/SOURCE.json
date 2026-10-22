@@ -1,0 +1,547 @@
+{
+  "repository": "https://github.com/DeepRoboticsLab/deep_robotics_model",
+  "branch": "main",
+  "commit": "75824b516ecc8fa3f8f7ce5d6577e1e86d6b614f",
+  "retrieved_date": "2026-10-20",
+  "selection": [
+    "DR02/mjcf/pro/",
+    "DR02/urdf/pro/",
+    "LICENSE.txt",
+    "README.md",
+    ".gitattributes"
+  ],
+  "files": [
+    {
+      "path": "upstream/.gitattributes",
+      "upstream_path": ".gitattributes",
+      "bytes": 0,
+      "git_blob_sha1": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/DR02_pro.xml",
+      "upstream_path": "DR02/mjcf/pro/DR02_pro.xml",
+      "bytes": 32475,
+      "git_blob_sha1": "dc330bc8d297afd629282ed0cc6caa7953964e36",
+      "sha256": "ee53516d472799d4bf0dc1765a33f98536570a6c9459dfcc75e0b9a52e6d79e1"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/base_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/base_link.STL",
+      "bytes": 1745634,
+      "git_blob_sha1": "0758d0ee98335217e3b86b93b11639234a087459",
+      "sha256": "8fee7a61ae3a5a698ed9e3aac256a01bf483082a84c8bc5b0ceaba99ed1aede8"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/body.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/body.STL",
+      "bytes": 6611584,
+      "git_blob_sha1": "063c209883acaac1b3e17b21f8b27c2a837719ad",
+      "sha256": "0065326f3bad9e8e503a1bdf4d7fc43040337e1f59b961329adabd424ee4f227"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/head_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/head_link.STL",
+      "bytes": 1321984,
+      "git_blob_sha1": "e573df75bcd80602b5605632caf45ac3c3855fc4",
+      "sha256": "5dcf25e6d2f5b5d9f00c5a2109e105a04bbfb068e81b7bc8ae536397781e71bb"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/left_ankle_x_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/left_ankle_x_link.STL",
+      "bytes": 796384,
+      "git_blob_sha1": "f6a4401f6957feb09722114866d7f1d09173ef57",
+      "sha256": "933f1df1cde7f3713978cc2485ccae334e94379ad05d82cadaa1019b20c4aa1e"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/left_ankle_y_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/left_ankle_y_link.STL",
+      "bytes": 523634,
+      "git_blob_sha1": "b001b115ef546cb56b6933039bf23b41d2e9637b",
+      "sha256": "c09d127aaea44d07daacee747ea0870b1e057620ab985a955d0852b3be08b801"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/left_elbow_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/left_elbow_link.STL",
+      "bytes": 336884,
+      "git_blob_sha1": "3571a7afece4380926d7c695007a4f6e477e49ed",
+      "sha256": "38211d6b0d0a13af4171311ee0055eae8efbf2cbc3d1ffd4fb75bd65fd343b73"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/left_hand_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/left_hand_link.STL",
+      "bytes": 918584,
+      "git_blob_sha1": "2ed076fedf30204559ae4c260bcc4507b7d599c3",
+      "sha256": "d414b4e7803950c2a19e5f4e710a97d5107fcf939713fae9e2f0b8d81e16dd02"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/left_hip_x_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/left_hip_x_link.STL",
+      "bytes": 730084,
+      "git_blob_sha1": "ab239fdf6750cc559e3fd8006a8b3ccb551c3aff",
+      "sha256": "427367a500f0ec4d62cdce7599eb77c85fe0428c834a3ba3d2a2a5aea9bc29e4"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/left_hip_y_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/left_hip_y_link.STL",
+      "bytes": 287884,
+      "git_blob_sha1": "35b3b490a3dbc86e7679fa03e81e16aa5230aeac",
+      "sha256": "17f51f44097a46489eb60f12afe047f0329f6522a0798f2c2951efbc45358aa3"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/left_hip_z_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/left_hip_z_link.STL",
+      "bytes": 930684,
+      "git_blob_sha1": "740d84b045766a2210c2937da8ae65f233491d48",
+      "sha256": "f7dbd864b55c5a5fadf432cc7f12c2dc1724a0ad2679206fb09bb2ea344e23a2"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/left_knee_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/left_knee_link.STL",
+      "bytes": 1047084,
+      "git_blob_sha1": "2f8bde6e4a0ecd79be36eef857468e4e5d8b425f",
+      "sha256": "a77ad7e00be1ac435310559cd60e54b074bd3824ce8dd31a890f9abaf91fab30"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/left_shoulder_x_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/left_shoulder_x_link.STL",
+      "bytes": 561184,
+      "git_blob_sha1": "89ea6d3d890b4184113c4077b982b1d4598319e1",
+      "sha256": "91d993c720322f5827aace148815ec4a7d04133b91bdd4af299db7d2d89e10fc"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/left_shoulder_y_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/left_shoulder_y_link.STL",
+      "bytes": 378884,
+      "git_blob_sha1": "13915d7c48196439de73dae38d5293b1a07da7e2",
+      "sha256": "5da423fdac9da96a249dcad2eecf6dfba27c89369421bd840e37faa205c23812"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/left_shoulder_z_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/left_shoulder_z_link.STL",
+      "bytes": 1015884,
+      "git_blob_sha1": "0c142e823cce8d29f06d94526da6c0e006091288",
+      "sha256": "f8aa526e7d84269aab9900983ff58ebaa47ae50394238429285cacd9f1f16d2e"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/left_wrist_x_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/left_wrist_x_link.STL",
+      "bytes": 418684,
+      "git_blob_sha1": "32449c2f87fafb2916010a526c737661b46c32ca",
+      "sha256": "d8787e6d6d9f4a75430d190a9405e48aec9467ed98e3fa866a782f47877ce225"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/left_wrist_y_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/left_wrist_y_link.STL",
+      "bytes": 1009284,
+      "git_blob_sha1": "b06f0db3402855a0b274c99db716b06e2d1a05cc",
+      "sha256": "9acc97064e54d6b104a16dae99348e73af48781401f4a5a597feed90e85a5fdd"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/left_wrist_z_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/left_wrist_z_link.STL",
+      "bytes": 535384,
+      "git_blob_sha1": "5cbf8f5cc9cc8cf8db292d082574844052d9431d",
+      "sha256": "69a19089f4da9357411b450f56a824fa775ea37aefef836128815d7d9b20de1a"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/neck_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/neck_link.STL",
+      "bytes": 517434,
+      "git_blob_sha1": "499edf7110596e870cde225055fff7e1ebb7dee2",
+      "sha256": "fcc5b16a2d1018e792df34caf5c1f6c43b9576be27e5832b06442ebc1982a71a"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/right_ankle_x_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/right_ankle_x_link.STL",
+      "bytes": 794984,
+      "git_blob_sha1": "ff86e1878276952d4c14936d925943900f06ff21",
+      "sha256": "7423f09810dce1248f7960a84ccc9cdcb1a852ae47d521197475373258cfb182"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/right_ankle_y_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/right_ankle_y_link.STL",
+      "bytes": 523734,
+      "git_blob_sha1": "3343d8c7f55f43861681f5538aaa8a084fb55e31",
+      "sha256": "daf92711d66799000efa06fe41e2e0a831c46bb0c1b8ef6cc146731820284d94"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/right_elbow_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/right_elbow_link.STL",
+      "bytes": 337084,
+      "git_blob_sha1": "f942add29a6df959a2e8da947e877ebf45f20af3",
+      "sha256": "16e60de1c1f42bd12b1333a41f3933765ced13169a7a006eb9387334f510a73d"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/right_hand_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/right_hand_link.STL",
+      "bytes": 940684,
+      "git_blob_sha1": "1167f9246cfc6b6ded6225853f5d82d047f53fca",
+      "sha256": "87ca2b3916354538e63fbf1814fddab946f5b5cfa4bb178ca51ef7e6686c6f5e"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/right_hip_x_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/right_hip_x_link.STL",
+      "bytes": 730184,
+      "git_blob_sha1": "60b70d818317a86c4b5e949ef4cbf1e3ce9cb19c",
+      "sha256": "8f8e6ed5af6b02bc886e326cf64aca8434e14992b7e173e9c09904d2b23bcf50"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/right_hip_y_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/right_hip_y_link.STL",
+      "bytes": 287884,
+      "git_blob_sha1": "53709ea80c439ffac8823c62f0d850f0affa7923",
+      "sha256": "e81d9cf6c396a39dfb7bbc7309cc1490735c72411751ecabf0a2657fbb6d69a6"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/right_hip_z_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/right_hip_z_link.STL",
+      "bytes": 930534,
+      "git_blob_sha1": "eaaeb3dbfa27d6733f32d309f3197aca63c36a39",
+      "sha256": "b8510af591e38e105f7b983b05cffdfb2cf42ad9adb158cc8d84b0cf634a14f8"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/right_knee_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/right_knee_link.STL",
+      "bytes": 1047384,
+      "git_blob_sha1": "dcde6cfd4299c6d53474db2019e9d93d79bdddd5",
+      "sha256": "3865e57db0dd83d1ca04ba6c5e23c3ec1f58571040b4d8cd39e2afb9d73d5661"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/right_shoulder_x_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/right_shoulder_x_link.STL",
+      "bytes": 561184,
+      "git_blob_sha1": "27003feb43dd32b4300de2669d882a2943770744",
+      "sha256": "8194e2a4893e31db08dc4e2e13f399c87499991a62ebd93ac170d4a0c8993d97"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/right_shoulder_y_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/right_shoulder_y_link.STL",
+      "bytes": 378584,
+      "git_blob_sha1": "57b691f0b3f6c0e2180179f0b9bfdb3edfbde1ba",
+      "sha256": "441c0bb194fcf2226b33f4c8ac9bbd60d104feeed363f1d495e5d07e04058bcb"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/right_shoulder_z_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/right_shoulder_z_link.STL",
+      "bytes": 1016284,
+      "git_blob_sha1": "51c7b6e0ae7d5fbd5144f2abea19163c1e66b357",
+      "sha256": "2153a032199cd6d39d5109e73f30e732fac0e8da99847bda09f822c1839d106e"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/right_wrist_x_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/right_wrist_x_link.STL",
+      "bytes": 419284,
+      "git_blob_sha1": "d86b44d34913a3ccb15fcdfdbdcd131c61b81b2c",
+      "sha256": "5754566feb9c4c2aed97aac0d5fbb0b728c0d3741d4f772c75ab8a199b3ea8fd"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/right_wrist_y_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/right_wrist_y_link.STL",
+      "bytes": 1009084,
+      "git_blob_sha1": "fe09d68592af328104532ad347b7bec7f3d3abf8",
+      "sha256": "5af9ef5145a91f70ba97d997334fd09f6dd81ade479c60e1a1909d14655a31bf"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/right_wrist_z_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/right_wrist_z_link.STL",
+      "bytes": 535384,
+      "git_blob_sha1": "53012cb0a877cd2d18396e5bfcd1775c8f95e9a3",
+      "sha256": "2c4d7c2267e4f0b9ac72f2eb1258666f87984b65d93c446a8ce639131c24c8b4"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/waist_x_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/waist_x_link.STL",
+      "bytes": 249684,
+      "git_blob_sha1": "927d1b8ab3586bdf5c99f1c3d83cd76a35705458",
+      "sha256": "361668ebd46870f3f1d10991d133f45706bbe1d7d2d9e810e5894905f2a6a1bd"
+    },
+    {
+      "path": "upstream/DR02/mjcf/pro/meshes/waist_z_link.STL",
+      "upstream_path": "DR02/mjcf/pro/meshes/waist_z_link.STL",
+      "bytes": 422684,
+      "git_blob_sha1": "1fccf90ed5df1ff73126701f99a9e8a59b875271",
+      "sha256": "273d64aef6b87e31e39d9aed24f25bb669d46c1405c0733e791cb2017741edc3"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/DR02-pro.urdf",
+      "upstream_path": "DR02/urdf/pro/DR02-pro.urdf",
+      "bytes": 38879,
+      "git_blob_sha1": "131b4426b621750405f2d7b96db4fab6fac6d29a",
+      "sha256": "7d926201951da8d5facba6e3710049df0b93762c469f2f93a9eadc410de5b70f"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/DR02-pro_fix_joints.urdf",
+      "upstream_path": "DR02/urdf/pro/DR02-pro_fix_joints.urdf",
+      "bytes": 37966,
+      "git_blob_sha1": "27eb58e23db9ec35dc954c119240c598562181d3",
+      "sha256": "35d64677c6356c6da702aa31d80f98c75aa9b9f306d2a13855ebaee9a70bb302"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/base_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/base_link.STL",
+      "bytes": 1745634,
+      "git_blob_sha1": "0758d0ee98335217e3b86b93b11639234a087459",
+      "sha256": "8fee7a61ae3a5a698ed9e3aac256a01bf483082a84c8bc5b0ceaba99ed1aede8"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/body.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/body.STL",
+      "bytes": 6611584,
+      "git_blob_sha1": "063c209883acaac1b3e17b21f8b27c2a837719ad",
+      "sha256": "0065326f3bad9e8e503a1bdf4d7fc43040337e1f59b961329adabd424ee4f227"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/head_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/head_link.STL",
+      "bytes": 1321984,
+      "git_blob_sha1": "e573df75bcd80602b5605632caf45ac3c3855fc4",
+      "sha256": "5dcf25e6d2f5b5d9f00c5a2109e105a04bbfb068e81b7bc8ae536397781e71bb"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/left_ankle_x_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/left_ankle_x_link.STL",
+      "bytes": 796384,
+      "git_blob_sha1": "f6a4401f6957feb09722114866d7f1d09173ef57",
+      "sha256": "933f1df1cde7f3713978cc2485ccae334e94379ad05d82cadaa1019b20c4aa1e"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/left_ankle_y_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/left_ankle_y_link.STL",
+      "bytes": 523634,
+      "git_blob_sha1": "b001b115ef546cb56b6933039bf23b41d2e9637b",
+      "sha256": "c09d127aaea44d07daacee747ea0870b1e057620ab985a955d0852b3be08b801"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/left_elbow_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/left_elbow_link.STL",
+      "bytes": 336884,
+      "git_blob_sha1": "3571a7afece4380926d7c695007a4f6e477e49ed",
+      "sha256": "38211d6b0d0a13af4171311ee0055eae8efbf2cbc3d1ffd4fb75bd65fd343b73"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/left_hand_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/left_hand_link.STL",
+      "bytes": 918584,
+      "git_blob_sha1": "2ed076fedf30204559ae4c260bcc4507b7d599c3",
+      "sha256": "d414b4e7803950c2a19e5f4e710a97d5107fcf939713fae9e2f0b8d81e16dd02"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/left_hip_x_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/left_hip_x_link.STL",
+      "bytes": 730084,
+      "git_blob_sha1": "ab239fdf6750cc559e3fd8006a8b3ccb551c3aff",
+      "sha256": "427367a500f0ec4d62cdce7599eb77c85fe0428c834a3ba3d2a2a5aea9bc29e4"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/left_hip_y_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/left_hip_y_link.STL",
+      "bytes": 287884,
+      "git_blob_sha1": "35b3b490a3dbc86e7679fa03e81e16aa5230aeac",
+      "sha256": "17f51f44097a46489eb60f12afe047f0329f6522a0798f2c2951efbc45358aa3"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/left_hip_z_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/left_hip_z_link.STL",
+      "bytes": 930684,
+      "git_blob_sha1": "740d84b045766a2210c2937da8ae65f233491d48",
+      "sha256": "f7dbd864b55c5a5fadf432cc7f12c2dc1724a0ad2679206fb09bb2ea344e23a2"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/left_knee_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/left_knee_link.STL",
+      "bytes": 1047084,
+      "git_blob_sha1": "2f8bde6e4a0ecd79be36eef857468e4e5d8b425f",
+      "sha256": "a77ad7e00be1ac435310559cd60e54b074bd3824ce8dd31a890f9abaf91fab30"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/left_shoulder_x_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/left_shoulder_x_link.STL",
+      "bytes": 561184,
+      "git_blob_sha1": "89ea6d3d890b4184113c4077b982b1d4598319e1",
+      "sha256": "91d993c720322f5827aace148815ec4a7d04133b91bdd4af299db7d2d89e10fc"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/left_shoulder_y_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/left_shoulder_y_link.STL",
+      "bytes": 378884,
+      "git_blob_sha1": "13915d7c48196439de73dae38d5293b1a07da7e2",
+      "sha256": "5da423fdac9da96a249dcad2eecf6dfba27c89369421bd840e37faa205c23812"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/left_shoulder_z_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/left_shoulder_z_link.STL",
+      "bytes": 1015884,
+      "git_blob_sha1": "0c142e823cce8d29f06d94526da6c0e006091288",
+      "sha256": "f8aa526e7d84269aab9900983ff58ebaa47ae50394238429285cacd9f1f16d2e"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/left_wrist_x_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/left_wrist_x_link.STL",
+      "bytes": 418684,
+      "git_blob_sha1": "32449c2f87fafb2916010a526c737661b46c32ca",
+      "sha256": "d8787e6d6d9f4a75430d190a9405e48aec9467ed98e3fa866a782f47877ce225"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/left_wrist_x_link_simplified.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/left_wrist_x_link_simplified.STL",
+      "bytes": 275584,
+      "git_blob_sha1": "ea1408943074373e69a2989160861fdf2e78d99b",
+      "sha256": "e6ca0979810b283971c0d03305ba9bd9d35258d58610e14015f7cf64d308ee03"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/left_wrist_y_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/left_wrist_y_link.STL",
+      "bytes": 1009284,
+      "git_blob_sha1": "b06f0db3402855a0b274c99db716b06e2d1a05cc",
+      "sha256": "9acc97064e54d6b104a16dae99348e73af48781401f4a5a597feed90e85a5fdd"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/left_wrist_z_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/left_wrist_z_link.STL",
+      "bytes": 535384,
+      "git_blob_sha1": "5cbf8f5cc9cc8cf8db292d082574844052d9431d",
+      "sha256": "69a19089f4da9357411b450f56a824fa775ea37aefef836128815d7d9b20de1a"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/neck_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/neck_link.STL",
+      "bytes": 517434,
+      "git_blob_sha1": "499edf7110596e870cde225055fff7e1ebb7dee2",
+      "sha256": "fcc5b16a2d1018e792df34caf5c1f6c43b9576be27e5832b06442ebc1982a71a"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/right_ankle_x_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/right_ankle_x_link.STL",
+      "bytes": 794984,
+      "git_blob_sha1": "ff86e1878276952d4c14936d925943900f06ff21",
+      "sha256": "7423f09810dce1248f7960a84ccc9cdcb1a852ae47d521197475373258cfb182"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/right_ankle_y_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/right_ankle_y_link.STL",
+      "bytes": 523734,
+      "git_blob_sha1": "3343d8c7f55f43861681f5538aaa8a084fb55e31",
+      "sha256": "daf92711d66799000efa06fe41e2e0a831c46bb0c1b8ef6cc146731820284d94"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/right_elbow_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/right_elbow_link.STL",
+      "bytes": 337084,
+      "git_blob_sha1": "f942add29a6df959a2e8da947e877ebf45f20af3",
+      "sha256": "16e60de1c1f42bd12b1333a41f3933765ced13169a7a006eb9387334f510a73d"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/right_hand_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/right_hand_link.STL",
+      "bytes": 940684,
+      "git_blob_sha1": "1167f9246cfc6b6ded6225853f5d82d047f53fca",
+      "sha256": "87ca2b3916354538e63fbf1814fddab946f5b5cfa4bb178ca51ef7e6686c6f5e"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/right_hip_x_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/right_hip_x_link.STL",
+      "bytes": 730184,
+      "git_blob_sha1": "60b70d818317a86c4b5e949ef4cbf1e3ce9cb19c",
+      "sha256": "8f8e6ed5af6b02bc886e326cf64aca8434e14992b7e173e9c09904d2b23bcf50"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/right_hip_y_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/right_hip_y_link.STL",
+      "bytes": 287884,
+      "git_blob_sha1": "53709ea80c439ffac8823c62f0d850f0affa7923",
+      "sha256": "e81d9cf6c396a39dfb7bbc7309cc1490735c72411751ecabf0a2657fbb6d69a6"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/right_hip_z_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/right_hip_z_link.STL",
+      "bytes": 930534,
+      "git_blob_sha1": "eaaeb3dbfa27d6733f32d309f3197aca63c36a39",
+      "sha256": "b8510af591e38e105f7b983b05cffdfb2cf42ad9adb158cc8d84b0cf634a14f8"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/right_knee_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/right_knee_link.STL",
+      "bytes": 1047384,
+      "git_blob_sha1": "dcde6cfd4299c6d53474db2019e9d93d79bdddd5",
+      "sha256": "3865e57db0dd83d1ca04ba6c5e23c3ec1f58571040b4d8cd39e2afb9d73d5661"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/right_shoulder_x_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/right_shoulder_x_link.STL",
+      "bytes": 561184,
+      "git_blob_sha1": "27003feb43dd32b4300de2669d882a2943770744",
+      "sha256": "8194e2a4893e31db08dc4e2e13f399c87499991a62ebd93ac170d4a0c8993d97"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/right_shoulder_y_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/right_shoulder_y_link.STL",
+      "bytes": 378584,
+      "git_blob_sha1": "57b691f0b3f6c0e2180179f0b9bfdb3edfbde1ba",
+      "sha256": "441c0bb194fcf2226b33f4c8ac9bbd60d104feeed363f1d495e5d07e04058bcb"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/right_shoulder_z_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/right_shoulder_z_link.STL",
+      "bytes": 1016284,
+      "git_blob_sha1": "51c7b6e0ae7d5fbd5144f2abea19163c1e66b357",
+      "sha256": "2153a032199cd6d39d5109e73f30e732fac0e8da99847bda09f822c1839d106e"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/right_wrist_x_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/right_wrist_x_link.STL",
+      "bytes": 419284,
+      "git_blob_sha1": "d86b44d34913a3ccb15fcdfdbdcd131c61b81b2c",
+      "sha256": "5754566feb9c4c2aed97aac0d5fbb0b728c0d3741d4f772c75ab8a199b3ea8fd"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/right_wrist_x_link_simplified.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/right_wrist_x_link_simplified.STL",
+      "bytes": 282184,
+      "git_blob_sha1": "e86a502b2cf04f8b4870539a8d53e2e93ac7e748",
+      "sha256": "37f570f69a14f3a9e900197b5f1e8a742d0cf8305302605c67e233b6b37db8b4"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/right_wrist_y_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/right_wrist_y_link.STL",
+      "bytes": 1009084,
+      "git_blob_sha1": "fe09d68592af328104532ad347b7bec7f3d3abf8",
+      "sha256": "5af9ef5145a91f70ba97d997334fd09f6dd81ade479c60e1a1909d14655a31bf"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/right_wrist_z_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/right_wrist_z_link.STL",
+      "bytes": 535384,
+      "git_blob_sha1": "53012cb0a877cd2d18396e5bfcd1775c8f95e9a3",
+      "sha256": "2c4d7c2267e4f0b9ac72f2eb1258666f87984b65d93c446a8ce639131c24c8b4"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/waist_x_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/waist_x_link.STL",
+      "bytes": 249684,
+      "git_blob_sha1": "927d1b8ab3586bdf5c99f1c3d83cd76a35705458",
+      "sha256": "361668ebd46870f3f1d10991d133f45706bbe1d7d2d9e810e5894905f2a6a1bd"
+    },
+    {
+      "path": "upstream/DR02/urdf/pro/meshes/waist_z_link.STL",
+      "upstream_path": "DR02/urdf/pro/meshes/waist_z_link.STL",
+      "bytes": 422684,
+      "git_blob_sha1": "1fccf90ed5df1ff73126701f99a9e8a59b875271",
+      "sha256": "273d64aef6b87e31e39d9aed24f25bb669d46c1405c0733e791cb2017741edc3"
+    },
+    {
+      "path": "upstream/LICENSE.txt",
+      "upstream_path": "LICENSE.txt",
+      "bytes": 1502,
+      "git_blob_sha1": "cdc6c0650996d411081656502769ac2ec4b1d156",
+      "sha256": "6bc5967b1cfbdb83b0798942a5f11d4e0555ad8de17697bd4d7eaab6e22f9be5"
+    },
+    {
+      "path": "upstream/README.md",
+      "upstream_path": "README.md",
+      "bytes": 2440,
+      "git_blob_sha1": "9172281b17f04b3bb8418f2b86a86666b9090d42",
+      "sha256": "f45ef19051d89192d93a9f699eca600296c4828b70049ecc9e34b746434f6a6e"
+    }
+  ]
+}

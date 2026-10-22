@@ -1,0 +1,17 @@
+{
+  "input": "motion_actor_smplx.npz",
+  "input_frames": [
+    0,
+    1,
+    2
+  ],
+  "surface_samples": 64,
+  "epochs": 1,
+  "iters": 15,
+  "first_frame_iters": 60,
+  "ground_margin_m": 0.005,
+  "filter": "lqr",
+  "source": "synthetic, not a recorded dataset",
+  "scope": "execution check only",
+  "not_a_quality_benchmark": true
+}

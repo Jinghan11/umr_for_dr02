@@ -1,0 +1,22 @@
+# Install torch separately (CPU or CUDA); see README.
+numpy==1.26.4
+scipy==1.17.1
+mujoco==3.3.7
+smplx==0.1.28
+clarabel==0.11.1
+trimesh==5.1.1
+embreex==4.4.0
+cholespy==2.2.0
+rtree==1.4.1
+mink==0.0.13
+qpsolvers==4.13.0
+daqp==0.10.3
+h5py==3.16.0
+joblib==1.6.0
+imageio==2.38.1
+imageio-ffmpeg==0.6.0
+pillow==13.0.0
+pyyaml==6.0.3
+tqdm==4.70.1
+viser==1.1.1
+coacd==1.0.14

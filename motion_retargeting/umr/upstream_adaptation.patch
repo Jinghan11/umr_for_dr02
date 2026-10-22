@@ -1,0 +1,144 @@
+diff --git a/scripts/build_correspondence_ae_dataset.py b/scripts/build_correspondence_ae_dataset.py
+index d4228dc..b923c0e 100644
+--- a/scripts/build_correspondence_ae_dataset.py
++++ b/scripts/build_correspondence_ae_dataset.py
+@@ -566,6 +566,9 @@ def coerce_betas(betas, num_betas=10):
+ 
+ def load_smpl_template(model_dir, model_type, gender, betas=None):
+     betas = coerce_betas(betas, 10)
++    if model_type == "smpl" and os.environ.get("UMR_SMPL_TEMPLATE"):
++        import smpl_surface_adapter
++        return smpl_surface_adapter.load_template(os.environ["UMR_SMPL_TEMPLATE"])
+     if model_type == "smpl":
+         direct_file = model_dir / f"SMPL_{gender.upper()}.pkl"
+         model_path = direct_file if direct_file.is_file() else model_dir
+diff --git a/scripts/retarget_body_segment_surface.py b/scripts/retarget_body_segment_surface.py
+index 8872d37..3487100 100644
+--- a/scripts/retarget_body_segment_surface.py
++++ b/scripts/retarget_body_segment_surface.py
+@@ -767,6 +767,12 @@ def smplx_slot_part_ids_from_binding(
+     template_faces = np.asarray(template_faces, dtype=np.int32)
+     face_ids = np.asarray(face_ids, dtype=np.int32)
+     template_vertex_count = int(np.max(template_faces)) + 1
++    if template_vertex_count == SMPL_VERTEX_COUNT and os.environ.get("UMR_SMPL_TEMPLATE"):
++        import smpl_surface_adapter
++        return smpl_surface_adapter.slot_part_ids(
++            template_faces, face_ids, template_vertices=template_vertices,
++            bary=bary, slot_points=slot_points, log_prefix=log_prefix,
++        )
+     smplx17_face_part_ids, part_names, segmentation_path, config_path = load_smplx17_face_parts()
+     part_names = {**part_names, **body_segment_part_names()}
+     if template_vertex_count == SMPLX_VERTEX_COUNT and len(template_faces) == len(smplx17_face_part_ids):
+diff --git a/scripts/retarget_smpl_to_humanoid_surface_vector.py b/scripts/retarget_smpl_to_humanoid_surface_vector.py
+index eb53a37..cce5da0 100644
+--- a/scripts/retarget_smpl_to_humanoid_surface_vector.py
++++ b/scripts/retarget_smpl_to_humanoid_surface_vector.py
+@@ -820,9 +820,7 @@ def prepare_robot_xml(args) -> Path:
+     if xml_policy.get("add_freejoint_root", True) is False:
+         return source_xml
+ 
+-    output_xml = source_xml.parent / (
+-        Path(args.out).with_suffix(".floating_mjcf.xml").name
+-    )
++    output_xml = Path(args.out).with_suffix(".floating_mjcf.xml")
+     tree = ET.parse(source_xml)
+     root = tree.getroot()
+     worldbody = root.find("worldbody")
+@@ -2148,7 +2146,7 @@ def main():
+         soma_usd_path=soma_usd_path,
+     )
+     source_up = str(sequence.get("output_up", "z"))
+-    is_uniform_source = source_model_type not in {"smplx", "soma"}
++    is_uniform_source = source_model_type not in {"smpl", "smplx", "soma"}
+     vertices_world = None
+     joints_world = None
+     ground_z = 0.0
+@@ -2870,6 +2868,11 @@ def main():
+         "zero_source_finger_pose": np.asarray([bool(args.zero_source_finger_pose)]),
+     }
+     np.savez_compressed(args.out, **output_payload)
++    np.savez_compressed(args.out.with_name(args.out.stem + "_diagnostics.npz"),
++                        frame_costs=costs, unfiltered_qpos=unfiltered_qpos_seq,
++                        qp_status_names=np.asarray(list(common.QP_STATUS_COUNTS)),
++                        qp_status_counts=np.asarray(list(common.QP_STATUS_COUNTS.values())))
++    print(f"[HumanoidRetarget][QPStatus] {common.QP_STATUS_COUNTS}")
+     print(
+         f"[HumanoidRetarget] saved {args.out} qpos={qpos_seq.shape} "
+         f"cost mean={float(costs.mean()):.6f} max={float(costs.max()):.6f}"
+diff --git a/scripts/smpl_surface_retarget_common.py b/scripts/smpl_surface_retarget_common.py
+index 40e546c..a3f224b 100644
+--- a/scripts/smpl_surface_retarget_common.py
++++ b/scripts/smpl_surface_retarget_common.py
+@@ -34,6 +34,8 @@ from view_smpl_mujoco import dynamic_surface_template_to_world, model_faces  # n
+ import soma_source  # noqa: E402
+ import nr_source  # noqa: E402
+ from smplx_model_loader import build_smplx_model as load_smplx_model  # noqa: E402
++import smpl_surface_adapter  # DR02 Pro comparison: genuine SMPL surface input.
++QP_STATUS_COUNTS = {}  # Diagnostics only; the solver and failure behavior are unchanged.
+ 
+ 
+ SMPLX_JOINT_IDS = {
+@@ -173,6 +175,8 @@ def load_flat_smplx_sequence(path: Path):
+ 
+ def load_motion_collection(path: Path):
+     path = Path(path)
++    if path.is_file() and smpl_surface_adapter.is_surface_npz(path):
++        return {path.stem: smpl_surface_adapter.load_motion(path)}, "smpl_surface_npz"
+     if path.is_dir():
+         if nr_source.is_nr_root(path):
+             return nr_source.load_nr_motion_collection(path)
+@@ -223,6 +227,8 @@ def slice_frames(num_frames, start, end, stride, max_frames):
+ 
+ 
+ def sequence_frame_count(sequence):
++    if sequence.get("source_format") == "smpl_surface_npz":
++        return len(sequence["vertices"])
+     if is_nr_sequence(sequence):
+         return nr_source.sequence_frame_count(sequence)
+     return soma_source.sequence_frame_count(sequence)
+@@ -237,6 +243,8 @@ def is_nr_sequence(sequence) -> bool:
+ 
+ 
+ def source_model_type(sequence, template_cfg=None) -> str:
++    if sequence is not None and sequence.get("source_format") == "smpl_surface_npz":
++        return "smpl"
+     if template_cfg is not None and str(template_cfg.get("type", "")).lower() == "nr_fbx":
+         return "nr_fbx"
+     if is_nr_sequence(sequence):
+@@ -340,7 +348,7 @@ def center_smplx_template(vertices, joints, center_mode):
+ 
+ def center_source_template(vertices, joints, center_mode, joint_names=None, source_type="smplx"):
+     source_type = str(source_type).lower()
+-    if source_type == "smplx":
++    if source_type in {"smpl", "smplx"}:
+         return center_smplx_template(vertices, joints, center_mode)
+     vertices = np.asarray(vertices, dtype=np.float32).copy()
+     joints = np.asarray(joints, dtype=np.float32).copy()
+@@ -611,6 +619,9 @@ def source_motion_vertices_joints(
+     smplx_batch_size_max=10000,
+     smplx_batch_size_safety_factor=0.8,
+ ):
++    if sequence.get("source_format") == "smpl_surface_npz":
++        _vertices, _joints, faces = smpl_surface_adapter.load_template(sequence["template_path"])
++        return sequence["vertices"][frame_ids], sequence["joints"][frame_ids], faces
+     if is_nr_sequence(sequence):
+         return nr_source.motion_vertices_joints(sequence, frame_ids)
+     if is_soma_sequence(sequence):
+@@ -635,6 +646,9 @@ def source_motion_vertices_joints(
+ 
+ def source_template_vertices_joints_faces(sequence, template_cfg, smplx_model_dir, soma_usd_path=None):
+     source_type = source_model_type(sequence, template_cfg)
++    if source_type == "smpl":
++        vertices, joints, faces = smpl_surface_adapter.load_template(sequence["template_path"])
++        return vertices, joints, faces, None, "smpl"
+     if source_type == "nr_fbx":
+         vertices, joints, faces, joint_names = nr_source.template_vertices_joints_faces(sequence)
+         return vertices, joints, faces, joint_names, source_type
+@@ -1745,6 +1759,7 @@ def solve_clarabel_qp_step(
+     solver = clarabel.DefaultSolver(P_sparse, q.astype(np.float64), A_sparse, b, cones, settings)
+     result = solver.solve()
+     status = str(result.status)
++    QP_STATUS_COUNTS[status] = QP_STATUS_COUNTS.get(status, 0) + 1
+     if status not in ("Solved", "AlmostSolved"):
+         raise RuntimeError(f"Clarabel QP failed with status={status}")
+     dq = np.asarray(result.x[:nvar], dtype=np.float64)

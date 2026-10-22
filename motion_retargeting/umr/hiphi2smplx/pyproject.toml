@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hiphi2smplx"
+version = "0.1.0"
+description = "HiPHI BVH to SMPL-X body conversion with Mink IK"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "scipy>=1.10",
+  "mink",
+  "mujoco",
+  "qpsolvers",
+  "daqp",
+  "torch",
+  "h5py",
+  "smplx",
+  "tqdm",
+]
+
+[project.optional-dependencies]
+dev = ["build", "ruff"]
+
+[project.scripts]
+hiphi2smplx = "hiphi2smplx.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+hiphi2smplx = ["data/*.h5", "data/*.pkl", "data/README.md"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["B", "D", "E", "F", "I"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"

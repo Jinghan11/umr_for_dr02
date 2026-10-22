@@ -1,0 +1,75 @@
+{
+  "model": "mujoco/dr02_pro/upstream/DR02/mjcf/pro/DR02_pro.xml",
+  "nq": 38,
+  "nv": 37,
+  "nu": 31,
+  "tpose_qpos": {
+    "left_shoulder_x_joint": 1.5707963267948966,
+    "right_shoulder_x_joint": -1.5707963267948966,
+    "left_elbow_joint": 1.5707963267948966,
+    "right_elbow_joint": 1.5707963267948966
+  },
+  "positions": {
+    "base_link": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "body": [
+      0.0,
+      0.0,
+      0.29
+    ],
+    "left_shoulder_y_link": [
+      -0.02,
+      0.22315,
+      0.5249999999999999
+    ],
+    "left_elbow_link": [
+      -0.02,
+      0.48815,
+      0.5249999999999998
+    ],
+    "left_hand_link": [
+      -0.019998898016537214,
+      0.787849999997974,
+      0.5249999999999998
+    ],
+    "right_shoulder_y_link": [
+      -0.02,
+      -0.22315,
+      0.5249999999999999
+    ],
+    "right_elbow_link": [
+      -0.02,
+      -0.48815,
+      0.5249999999999998
+    ],
+    "right_hand_link": [
+      -0.019998898016537214,
+      -0.787849999997974,
+      0.5249999999999998
+    ],
+    "left_ankle_x_link": [
+      0.0,
+      0.1614,
+      -0.8293999999999999
+    ],
+    "right_ankle_x_link": [
+      0.0,
+      -0.1614,
+      -0.8293999999999999
+    ]
+  },
+  "left_arm_hand_delta": [
+    1.101983462786782e-06,
+    0.564699999997974,
+    -1.1102230246251565e-16
+  ],
+  "right_arm_hand_delta": [
+    1.101983462786782e-06,
+    -0.564699999997974,
+    -1.1102230246251565e-16
+  ],
+  "axis": "x-forward, y-left, z-up; source canonical x-left, y-up, z-forward"
+}

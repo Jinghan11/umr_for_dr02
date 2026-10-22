@@ -1,0 +1,4 @@
+*.npz binary
+*.pkl binary
+*.STL binary
+*.stl binary

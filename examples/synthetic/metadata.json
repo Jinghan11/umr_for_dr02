@@ -1,0 +1,13 @@
+{
+  "dataset": "hiphi",
+  "motion_id": "synthetic_arm_demo",
+  "frame_count": 30,
+  "actor_id": "A_SYNTHETIC",
+  "actor_metadata": {
+    "gender": "not_applicable"
+  },
+  "is_hoi": false,
+  "objects": [],
+  "synthetic": true,
+  "description": "Artificial SMPL-X-format signal; not a HiPHI dataset record."
+}

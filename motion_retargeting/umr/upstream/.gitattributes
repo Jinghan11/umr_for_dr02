@@ -1,0 +1,13 @@
+# Robot meshes, motion samples, and numerical arrays are stored as regular Git binary files.
+*.dae binary
+*.fbx binary
+*.glb binary
+*.obj binary
+*.stl binary
+*.STL binary
+*.usd binary
+*.bvh binary
+*.npz binary
+*.npy binary
+*.pkl binary
+*.bin binary

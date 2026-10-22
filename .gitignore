@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.retarget_runtime/
+artifacts/
+outputs/
+work/
+assets/body_models/*
+!assets/body_models/README.md
+*.log
+.env
+.env.*
