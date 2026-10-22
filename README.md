@@ -1,5 +1,27 @@
 # UMR for DR02 Pro
 
+For SONIC-related BONES-SEED retargeting, **prefer the original SOMA version**:
+use BONES-SEED BVH with its matching uniform/proportional MHR shape and SOMA
+assets via `--input-type soma`. Keep GEAR-SONIC's preconverted SMPL release for
+compatibility or comparisons when requested or when SOMA assets are unavailable,
+and record that choice. Preconverted SMPL can already contain pose discontinuities;
+foot-contact refinement does not repair upper-body jumps. The matched walking-loop
+example supports this preference, but is not a dataset-wide accuracy claim.
+
+Contact refinement is now **on by default** for `umr.py retarget`. The final
+`trajectory.npz` is refined after native UMR/LQR; `native_trajectory.npz` remains
+separate. Use `--no-contact-refine` for explicit native-only runs. Contact phases
+come from the corresponding human sole surface; velocities are recomputed on
+the 50 Hz clock. Failed contact acceptance stops the run.
+
+The default input remains fitted SMPL-X. BONES-SEED also supports
+`--input-type smpl_surface --data /path/to/surface.npz` for prepared, declared
+SMPL surface estimates, and `--input-type soma --data /path/to/motions_uniform/bvh/clip.bvh`
+for native SOMA BVH with matching dataset MHR shape and model assets. Both accept
+`--output /path/to/new_results` and default to the same DR02 solver/contact settings.
+SOMA resamples raw BVH transforms to 50 Hz before native surface reconstruction;
+it is never padded or converted into SMPL-X. See [contact details](motion_retargeting/umr/CONTACT.md).
+
 Portable motion retargeting for the **Deep Robotics DR02 Pro** using the surface correspondence and constrained optimization pipeline from [UMR](https://github.com/hanyang9/UMR). This is a local robot/input adaptation, not an official UMR robot release. [中文说明](README.zh-CN.md).
 
 Repository: [Jinghan11/umr_for_dr02](https://github.com/Jinghan11/umr_for_dr02).
@@ -76,7 +98,7 @@ python umr.py play --trajectory examples/synthetic/robot_playback.npz
 
 The viewer loops the stored `qpos` using forward kinematics. Close its window to exit. No physics controller is running. `validate` saves full-frame diagnostics and measured joint-limit/ground/contact quality; a successful command does not mean every quality threshold passes. The synthetic human input and robot playback are separate signals, not a retargeted pair.
 
-An additional `examples/synthetic/umr_smoke_trajectory.npz` contains a real UMR solve of the first three synthetic input frames (64 samples, one training epoch). It is included only to demonstrate the output schema and execution, not retargeting quality; settings are recorded in `umr_smoke_provenance.json`.
+The historical 30 Hz `examples/synthetic/umr_smoke_trajectory.npz` contains a real UMR solve of the first three synthetic input frames (64 samples, one training epoch). It is included only to demonstrate the output schema and execution, not retargeting quality; settings are recorded in `umr_smoke_provenance.json`.
 
 ## Obtain the body model separately
 
@@ -106,9 +128,10 @@ The first run builds surface samples and trains the correspondence network; subs
 | Root step | Box limits 0.05 rad / 0.05 m |
 | Source surface cache | 120-frame chunks |
 | Trajectory filter | Whole-sequence upstream LQR |
-| Input stride | 1; conversion has already selected frames |
+| Output / control clock | Exactly 50 Hz (20 ms); every fitted frame is solved |
+| Input stride | 1; raw BVH has already been sampled on the 50 Hz clock |
 
-To test execution quickly, use `--points 64 --epochs 1 --max-frames 3 --tag smoke`. These reduced settings check execution, **not retargeting quality**. They use a separate correspondence cache. Return to defaults for a substantive run. `--force` reruns the selected trajectories. Moving the checkout can invalidate caches because paths form part of their identity.
+To test execution quickly, use `--points 64 --epochs 1 --max-frames 12 --tag smoke`. These reduced settings check execution, **not retargeting quality**. They use a separate correspondence cache. Return to defaults for a substantive run. `--force` reruns the selected trajectories. Moving the checkout can invalidate caches because paths form part of their identity.
 
 Results are written to:
 
@@ -119,7 +142,7 @@ artifacts/hiphi_umr/        # correspondence weights, configs, scenes, native re
 .retarget_runtime/hiphi_umr/ # locks, status, solver logs
 ```
 
-With `--max-frames 3 --tag smoke`, the final directory suffix is `f0-end_s1_n3_smoke`. Inspect logs and `run.json` if a solve fails. Files are ignored by Git. Do not run multiple HiPHI runners concurrently in one checkout: the runner takes an exclusive lock.
+With `--max-frames 12 --tag smoke`, the final directory suffix is `f0-end_s1_n12_smoke`. Inspect logs and `run.json` if a solve fails. Files are ignored by Git. Do not run multiple HiPHI runners concurrently in one checkout: the runner takes an exclusive lock.
 
 ## Convert your own HiPHI BVH and retarget it
 
@@ -145,7 +168,7 @@ python umr.py retarget --data artifacts/my_sequence_converted \
 
 Conversion estimates fixed neutral-model betas from static BVH bone lengths, then uses official hiphi2smplx Mink fitting for all selected frames. This is a local shape estimate, not a scanned actor shape or the official beta fitter. It does not use the converter's optional external GMM/H5 beta-fitting resources. The public entry point estimates each input independently; it does not reuse the original author's A103 dataset records.
 
-Frames are selected once at stride 3 (approximately 90 → 30 Hz for typical HiPHI recordings). Original indices/timestamps and actual source fps are saved. Retargeting uses stride 1. A verified two-spine BVH adaptation is applied when required; unsupported skeletons fail explicitly. Only 22 body joints are fitted; face, eyes and fingers are zero. Conversion rejects overwriting incompatible existing results. For a clean rerun choose a new output directory.
+Raw BVH is sampled at **exactly 50 Hz** before SMPL-X fitting: position channels use linear interpolation and local rotations use SO(3) SLERP, including Euler wraparound. This replaces the former stride-3 90 → 30 Hz path. Both fitting and UMR solve every 20 ms sample; there is no post-solve 30 → 50 Hz interpolation. Original capture fps and timestamps are saved; source-frame coordinates can be fractional (for example 0, 1.8, 3.6 for exact 90 Hz capture). The output grid ends at or before the last measured source timestamp, with a tail shorter than 20 ms and no extrapolation. This is transform interpolation, not an antialiasing filter. Retargeting uses stride 1. Old 30 Hz conversions must be regenerated from raw BVH in a new output directory; changing only the fps metadata is rejected. A verified two-spine BVH adaptation is applied when required; unsupported skeletons fail explicitly. Only 22 body joints are fitted; face, eyes and fingers are zero. Conversion rejects overwriting incompatible existing results. For a clean rerun choose a new output directory.
 
 For multiple converted inputs, pass multiple paths after `--data`. The public entry runs sequences serially and reuses compatible shared correspondence. The original 1,527-motion server scheduler, storage budget policy, GPU UUIDs, dataset-specific first-frame seeds, and systemd services are deliberately not deployed here. A deeply crouched initial frame may make the native first constrained QP infeasible; inspect the solver error rather than treating a missing trajectory as success.
 
@@ -159,14 +182,16 @@ Each directory requires `metadata.json` with `dataset: "hiphi"` and `motion_id`,
 | `transl` | `[T,3]`, meters, Y-up |
 | `betas` | At least 10 shape coefficients |
 | `gender`, `model_type` | `neutral`, `smplx` |
-| `mocap_framerate` | Positive fps for this fitted sequence |
+| `mocap_framerate` | Exactly 50 Hz for retargeting |
 | `output_up` | `y` |
-| `source_frame_ids`, `source_time_seconds` | Original capture correspondence |
+| `source_frame_ids`, `source_time_seconds` | Fractional original-frame coordinates and original capture timestamps |
 | `source_fps` | Original capture fps |
 
 Use a model matching the fitted gender; the shared template in this workflow requires neutral. Never pad a 72-value SMPL pose to 165 values and call it SMPL-X. The example generator demonstrates the numerical schema without distributing model parameters.
 
-The older estimated-SMPL-surface entry remains in `motion_retargeting/umr/run.py`. It expects an already prepared SMPL surface sequence (`vertices[T,6890,3]`, `joints[T,24,3]`, `fps`, `template_path`) plus a canonical template containing `vertices`, `joints`, `faces`, and `lbs_weights`. It is a separate input representation, not raw SMPL pose conversion:
+For already fitted inputs, use the 50 Hz conversion above or supply genuinely fitted 50 Hz data; the runner rejects other rates instead of silently interpolating potentially discontinuous SMPL-X local rotations.
+
+The older estimated-SMPL-surface entry remains in `motion_retargeting/umr/run.py`. It expects an already prepared SMPL surface sequence (`vertices[T,6890,3]`, `joints[T,24,3]`, `fps=50`, `template_path`) plus a canonical template containing `vertices`, `joints`, `faces`, and `lbs_weights`. It is a separate input representation, not raw SMPL pose conversion:
 
 ```bash
 python motion_retargeting/umr/run.py \
@@ -188,7 +213,9 @@ MUJOCO_GL=egl python motion_retargeting/umr/render_hiphi.py \
 
 Use `MUJOCO_GL=osmesa` if your machine has an OSMesa setup instead of EGL. Rendering needs the original converted input and the native result referenced by the trajectory/run record; keep those run artifacts together. After moving previously generated runs, regenerate them if embedded paths are stale.
 
-Robot output uses `qpos[T,38]`: root XYZ in meters, root quaternion **wxyz**, then 31 joint angles in the recorded `joint_names` order. Output is X-forward/Y-left/Z-up; `fps`, frame indices, original time mapping, provenance and root fields are retained. LQR follows constrained per-frame optimization, so measure the **final** trajectory for penetration or limit violations. For semantic floor-action exclusions, pass `--metadata /path/to/metadata.json` to validation (`frame`, `lu`, `text_annotation`). Without it, `category_metadata_supplied` is false and no category-based exclusions are claimed. Validation reports real geometry and kinematic proxies; it does not modify poses or certify dynamics, balance, contact forces, controller tracking, or real-robot safety.
+Robot output uses `qpos[T,38]`: root XYZ in meters, root quaternion **wxyz**, then 31 joint angles in the recorded `joint_names` order. Output is X-forward/Y-left/Z-up. New runs include `fps=50`, `control_dt=0.02`, `time_seconds` at 20 ms spacing, and `qvel[T,37]` (MuJoCo tangent velocities, including free-root angular velocity). Velocities are computed from the final qpos after LQR and any contact refinement, with central differences and one-sided endpoints; they are not interpolated from old 30 Hz velocities. Frame indices, fractional original-frame coordinates, original timestamps, provenance and root fields are retained. A 50 Hz consumer advances one output sample per control tick; no change to an external controller is installed by this package. LQR follows constrained per-frame optimization, so measure the **final** trajectory for penetration or limit violations. For semantic floor-action exclusions, pass `--metadata /path/to/metadata.json` to validation (`frame`, `lu`, `text_annotation`). Without it, `category_metadata_supplied` is false and no category-based exclusions are claimed. Validation reports real geometry and kinematic proxies; it does not modify poses or certify dynamics, balance, contact forces, controller tracking, or real-robot safety.
+
+For joint references at control tick `k`, use `qpos[k, 7:]` for the 31 joint positions and `qvel[k, 6:]` for their velocities, in `joint_names` order. Root quaternion coordinates occupy four qpos entries but only three angular-velocity entries in qvel; do not use the same column offset for both arrays.
 
 ## Layout and provenance
 

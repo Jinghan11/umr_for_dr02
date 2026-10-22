@@ -11,3 +11,7 @@ assets/body_models/*
 *.log
 .env
 .env.*
+
+# Local source-data compatibility; kept outside the UMR implementation.
+/.venv
+/motion_retargeting/umr/upstream/sample_data

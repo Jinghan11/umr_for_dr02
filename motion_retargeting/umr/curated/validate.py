@@ -100,13 +100,15 @@ def validate_trajectory(path, *, expected_frames=None, expected_original_frame_i
         fps = float(_scalar(packed, "fps"))
         original_fps = float(_scalar(packed, "original_fps"))
         ids_raw = np.asarray(packed["original_frame_ids"])
-        ids = ids_raw.astype(np.int64)
+        ids = ids_raw.astype(np.float64)
         frame_ids = np.asarray(packed["frame_ids"])
         times = np.asarray(packed["original_time_seconds"], dtype=np.float64)
         names = np.asarray(packed["joint_names"]).astype(str).tolist()
         root_pos = np.asarray(packed["root_pos"])
         root_quat = np.asarray(packed["root_quat_wxyz"])
         time_seconds = np.asarray(packed["time_seconds"], dtype=np.float64) if "time_seconds" in packed else None
+        qvel = np.asarray(packed['qvel'], dtype=np.float64) if 'qvel' in packed else None
+        control_dt = _scalar(packed, 'control_dt')
         source_count = _scalar(packed, "original_frame_count")
         motion_id = str(_scalar(packed, "clip_id", path.parent.name))
         solver_counts = json.loads(str(_scalar(packed, "qp_status_counts_json", "{}")))
@@ -126,22 +128,32 @@ def validate_trajectory(path, *, expected_frames=None, expected_original_frame_i
     if not np.isfinite([fps, original_fps]).all() or min(fps, original_fps) <= 0:
         raise ValueError("Invalid trajectory/source fps")
     stride = original_fps / fps
-    if ids.shape != (frames,) or not np.array_equal(ids_raw, ids) or np.any(ids < 0):
+    if ids.shape != (frames,) or not np.isfinite(ids).all() or np.any(ids < 0):
         raise ValueError("Invalid original frame indices")
     if frames > 1 and (np.any(np.diff(ids) <= 0) or not np.allclose(np.diff(ids), stride)):
         raise ValueError("Original frame indices disagree with source/output fps")
-    if frame_ids.shape != (frames,) or (frames > 1 and not np.all(np.diff(frame_ids) == 1)):
+    if (frame_ids.shape != (frames,) or not np.isfinite(frame_ids).all() or np.any(frame_ids < 0)
+            or not np.array_equal(frame_ids, frame_ids.astype(np.int64))
+            or (frames > 1 and not np.all(np.diff(frame_ids) == 1))):
         raise ValueError("Output must preserve consecutive selected frame indices")
     if times.shape != (frames,) or not np.allclose(times, ids / original_fps, atol=1e-8, rtol=1e-8):
         raise ValueError("Original source timestamps do not match source frame ids/fps")
     if time_seconds is not None and (time_seconds.shape != (frames,) or not np.allclose(time_seconds, np.arange(frames) / fps, atol=1e-8, rtol=1e-8)):
         raise ValueError("Output timestamps do not match output frame ids/fps")
-    if source_count is not None and np.any(ids >= int(source_count)):
+    if source_count is not None and np.any(ids > int(source_count) - 1 + 1e-8):
         raise ValueError("Original frame index exceeds capture length")
-    if expected_original_frame_ids is not None and not np.array_equal(ids, np.asarray(expected_original_frame_ids, dtype=np.int64)):
+    if expected_original_frame_ids is not None and not np.allclose(ids, np.asarray(expected_original_frame_ids, dtype=np.float64), atol=1e-8, rtol=0):
         raise ValueError("Output original frame ids differ from converted source")
     if expected_original_fps is not None and not np.isclose(original_fps, float(expected_original_fps), rtol=1e-9):
         raise ValueError("Output original fps differs from converted source")
+    if control_dt is not None and (not np.isfinite(control_dt) or not np.isclose(control_dt, 1 / fps, atol=1e-12, rtol=0)):
+        raise ValueError('Control timestep disagrees with trajectory fps')
+    if qvel is not None:
+        from ..resampling import qpos_velocities
+        if qvel.shape != (frames, model.nv) or not np.isfinite(qvel).all():
+            raise ValueError('Invalid qvel dimensions/numerics')
+        if not np.allclose(qvel, qpos_velocities(model, qpos, fps), atol=1e-8, rtol=1e-7):
+            raise ValueError('qvel disagrees with qpos and trajectory fps')
     if root_pos.shape != (frames, 3) or root_quat.shape != (frames, 4) or not np.array_equal(root_pos, qpos[:, :3]) or not np.array_equal(root_quat, qpos[:, 3:7]):
         raise ValueError("Root pose fields differ from unchanged qpos")
     joints = [j for j in range(model.njnt) if int(model.jnt_type[j]) in
@@ -192,6 +204,7 @@ def validate_trajectory(path, *, expected_frames=None, expected_original_frame_i
     result = {"status": "validated", "validated": True, "quality_flagged": bool(flags),
               "quality_flags": flags, "trajectory_path": str(path), "trajectory_sha256": _sha256(path),
               "frames": frames, "qpos_shape": [frames, 38], "fps": fps, "original_fps": original_fps,
+              "control_dt": control_dt, "qvel_present": qvel is not None,
               "duration_seconds": frames / fps, "source_sample_span_seconds": float(times[-1]),
               "finite_failure_frames": 0, "joint_names": expected_names,
               "quaternion_norm_max_error": float(quat_error.max()),

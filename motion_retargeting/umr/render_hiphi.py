@@ -211,11 +211,15 @@ def load_bvh_overlay(path, source, frame_ids, surface, ground_z, scale):
     bvh_module = importlib.import_module(namespace + ".bvh")
     skeleton_module = importlib.import_module(namespace + ".skeleton")
     clip = bvh_module.load_bvh(path, unit_scale=.01)
-    positions, _ = clip.world_transforms()
-    source_ids = np.asarray(source.get("source_frame_ids", np.arange(len(surface.poses))), dtype=np.int64)
+    source_ids = np.asarray(source.get("source_frame_ids", np.arange(len(surface.poses))), dtype=np.float64)
     original_ids = source_ids[frame_ids]
-    if original_ids.min() < 0 or original_ids.max() >= clip.num_frames:
+    if original_ids.min() < 0 or original_ids.max() > clip.num_frames - 1 + 1e-8:
         raise ValueError("Converted source_frame_ids exceed the original BVH")
+    source_times = np.asarray(source.get("source_time_seconds", source_ids * clip.frame_time))[frame_ids]
+    sys.path.insert(0, str(ROOT))
+    from motion_retargeting.umr.resampling import sample_clip
+    sampled_clip = sample_clip(clip, source_times)
+    positions, _ = sampled_clip.world_transforms()
     expected_hash = scalar(source, "source_bvh_sha256")
     actual_hash = sha256(path)
     if expected_hash and expected_hash != actual_hash:
@@ -223,9 +227,9 @@ def load_bvh_overlay(path, source, frame_ids, surface, ground_z, scale):
     mapping = skeleton_module.map_skeleton(clip.skeleton)
     selected_names = [mapping[semantic] for semantic in skeleton_module.BODY_SEMANTICS]
     selected_ids = [clip.skeleton.joint_names.index(name) for name in selected_names]
-    points = positions[original_ids][:, selected_ids].copy()
+    points = positions[:, selected_ids].copy()
     if surface.human_scale_mode == "local":
-        root = clip.root_translations[original_ids, None]
+        root = sampled_clip.root_translations[:, None]
         points = (points - root) * surface.human_scale + root
     elif surface.human_scale_mode == "world":
         points *= surface.human_scale
@@ -233,7 +237,6 @@ def load_bvh_overlay(path, source, frame_ids, surface, ground_z, scale):
         points = points @ Y_TO_Z.T
     points[..., 2] -= ground_z
     points *= scale
-    source_times = np.asarray(source.get("source_time_seconds", source_ids * clip.frame_time))[frame_ids]
     if not np.allclose(original_ids * clip.frame_time, source_times, atol=1e-6):
         raise ValueError("Original BVH frame timing differs from the converted sequence")
     source_fps = float(scalar(source, "source_fps", 1 / clip.frame_time))
@@ -246,7 +249,7 @@ def load_bvh_overlay(path, source, frame_ids, surface, ground_z, scale):
               "loader": str(module_dir / "bvh.py"), "fk": str(module_dir / "kinematics.py"),
               "loader_sha256": sha256(module_dir / "bvh.py"),
               "fk_sha256": sha256(module_dir / "kinematics.py"),
-              "transform": "BVH cm -> m; exact animated local translation/rotation FK; same source up/ground/scale as mesh",
+              "transform": "BVH cm -> m; local SO(3) SLERP and linear positions at output timestamps before FK; same source up/ground/scale as mesh",
               "display": "22 original mapped body-joint positions, gold capsules; translucent blue SMPL-X fit",
               "joint_connections": "SMPL-X 22-body semantic hierarchy; skipped raw intermediate spine joints are not drawn"}
     if "per_frame_residuals" in source:
@@ -426,7 +429,7 @@ def render(args, qpos, fps, frame_ids, surface, ground_z, scale, robot_model, bo
             robot_renderer.update_scene(robot_data, camera=camera(centers[index], distance), scene_option=options)
             source_time = args.display_times[index]
             original_id = args.display_frame_ids[index]
-            subtitle = f"t={source_time:.2f}s | 1.00x | frame {int(original_id)}"
+            subtitle = f"t={source_time:.2f}s | 1.00x | source frame {original_id:.2f}"
             human_title = "HiPHI SMPL-X / UMR source surface"
             human_subtitle = subtitle
             if overlay is not None:
@@ -524,7 +527,7 @@ def main():
         raise ValueError("UMR frame_ids exceed the original SMPL-X source")
     if len(frame_ids) > 1 and not np.allclose(np.diff(frame_ids) / args.source_fps, 1 / fps, atol=1e-5):
         raise ValueError("Source frame IDs and trajectory fps do not describe synchronized uniform real-speed playback")
-    source_ids = np.asarray(source.get("source_frame_ids", np.arange(len(surface.poses))), dtype=np.int64)
+    source_ids = np.asarray(source.get("source_frame_ids", np.arange(len(surface.poses))), dtype=np.float64)
     args.display_frame_ids = source_ids[frame_ids]
     original_fps = float(scalar(source, "source_fps", args.source_fps))
     args.display_times = np.asarray(source.get("source_time_seconds", source_ids / original_fps))[frame_ids]
@@ -537,7 +540,7 @@ def main():
                   native_result=str(native_path.resolve()) if native_path else None,
                   robot_xml=str(robot_xml), robot_xml_sha256=sha256(robot_xml),
                   source_frame_range=[int(frame_ids[0]), int(frame_ids[-1])],
-                  original_frame_range=[int(args.display_frame_ids[0]), int(args.display_frame_ids[-1])],
+                  original_frame_range=[float(args.display_frame_ids[0]), float(args.display_frame_ids[-1])],
                   source_model={"path": str(surface.model_path), "gender": surface.gender,
                                 "betas": surface.betas.tolist(), "model_sha256": sha256(surface.model_path)},
                   source_transform={"source_up": surface.up, "output_up": "z", "smpl_scale": scale,

@@ -22,6 +22,10 @@ import xml.etree.ElementTree as ET
 
 import mujoco
 import numpy as np
+try:
+    from .resampling import CONTROL_FPS, qpos_velocities
+except ImportError:
+    from resampling import CONTROL_FPS, qpos_velocities
 
 METHOD = Path(__file__).resolve().parent
 ROOT = METHOD.parents[1]
@@ -78,8 +82,9 @@ def inspect_sequence(path: Path, args) -> dict:
         fps = float(scalar(motion, "mocap_framerate", scalar(motion, "fps", 30.0)))
         source_bvh = str(scalar(motion, "source_bvh", ""))
         output_up = str(scalar(motion, "output_up", scalar(motion, "coordinate_up", "y"))).lower()
-        original_ids = np.asarray(motion["source_frame_ids"], dtype=np.int64) if "source_frame_ids" in motion else np.arange(len(poses), dtype=np.int64)
+        original_ids = np.asarray(motion["source_frame_ids"], dtype=np.float64) if "source_frame_ids" in motion else np.arange(len(poses), dtype=np.float64)
         original_fps = float(scalar(motion, "source_fps", fps))
+        original_count = scalar(motion, 'source_frame_count', None)
         original_times = (np.asarray(motion["source_time_seconds"], dtype=np.float64)
                           if "source_time_seconds" in motion else original_ids / original_fps)
     if model_type != "smplx" or poses.ndim < 2 or poses.reshape(len(poses), -1).shape[1] != 165:
@@ -88,9 +93,18 @@ def inspect_sequence(path: Path, args) -> dict:
         raise ValueError(f"Invalid translation or beta dimensions in {motion_path}")
     if not all(np.isfinite(array).all() for array in (poses, trans, betas)) or not np.isfinite(fps) or fps <= 0:
         raise ValueError(f"Nonfinite motion values or invalid fps in {motion_path}")
+    if args.stride != 1 or not np.isclose(fps, CONTROL_FPS, atol=1e-8, rtol=0):
+        raise ValueError(f'Retargeting requires 50 Hz fitted input and stride 1; found {fps:g} Hz, stride {args.stride}. '
+                         'Reconvert the raw BVH with umr.py convert into a new directory; do not relabel 30 Hz data.')
     if (original_ids.shape != (len(poses),) or original_times.shape != (len(poses),)
-            or not np.isfinite(original_times).all() or not np.isfinite(original_fps) or original_fps <= 0):
+            or not np.isfinite(original_ids).all() or not np.isfinite(original_times).all()
+            or not np.isfinite(original_fps) or original_fps <= 0
+            or np.any(original_ids < 0)
+            or not np.allclose(original_times, original_ids / original_fps, atol=1e-8, rtol=0)
+            or (len(poses) > 1 and not np.allclose(np.diff(original_times), 1 / fps, atol=1e-8, rtol=0))):
         raise ValueError(f"Invalid original source frame/time metadata in {motion_path}")
+    if original_count is not None and (original_count < 1 or np.any(original_ids > original_count - 1 + 1e-8)):
+        raise ValueError('Original source frame coordinates exceed the measured capture')
     # The supplied default is a neutral model. Do not silently replace a fitted
     # female/male body by neutral, or confuse actor gender with fitted gender.
     model_path = args.smplx_model.resolve()
@@ -110,6 +124,7 @@ def inspect_sequence(path: Path, args) -> dict:
             "output_up": output_up,
             "original_frame_ids": original_ids[frame_ids].tolist(),
             "original_time_seconds": original_times[frame_ids].tolist(), "original_fps": original_fps,
+            "original_frame_count": original_count,
             "objects": metadata.get("objects", []), "selected_frame_ids": frame_ids.tolist()}
 
 
@@ -254,7 +269,7 @@ def main() -> None:
     parser.add_argument("--smplx-model", type=Path, default=DEFAULT_MODEL, help="Licensed SMPL-X model file or directory.")
     parser.add_argument("--start", type=int, default=0, help="First original source frame, inclusive.")
     parser.add_argument("--end", type=int, default=-1, help="Last original source frame, exclusive; -1 uses all.")
-    parser.add_argument("--stride", type=int, default=3, help="Frame stride; 90 Hz sources become about 30 Hz at 3.")
+    parser.add_argument("--stride", type=int, default=1, help="Must be 1: fitted input already uses the 50 Hz control clock.")
     parser.add_argument("--max-frames", type=int, default=0, help="Cap selected frames; 0 uses all selected frames.")
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu", help="SMPL-X surface forward device; QP remains on CPU")
     parser.add_argument("--points", type=int, default=1024)
@@ -266,6 +281,8 @@ def main() -> None:
                         default="mujoco_collision", help="Official UMR floor constraint mode.")
     parser.add_argument("--ground-margin", type=float, default=0.001, help="Robot clearance above the floor, in metres.")
     parser.add_argument("--trajectory-filter", choices=("lqr", "off"), default="lqr")
+    parser.add_argument('--contact-refine', action=argparse.BooleanOptionalAction, default=True,
+                        help='Apply source-informed foot contact refinement after UMR/LQR; enabled by default.')
     parser.add_argument("--step-size", type=float, default=None,
                         help="Optional official local L2 and root box step limit (rad and metres).")
     parser.add_argument("--tag", default="", help="Optional suffix to preserve separate runs, e.g. collision.")
@@ -286,12 +303,18 @@ def main() -> None:
         parser.error(f"Licensed SMPL-X model not found: {args.smplx_model}")
     model_file = args.smplx_model.resolve()
     if model_file.is_dir():
-        model_file = next((model_file / name for name in ("SMPLX_NEUTRAL.pkl", "SMPLX_NEUTRAL.npz")
+        model_names = ('SMPLX_NEUTRAL.npz',) if args.contact_refine else ('SMPLX_NEUTRAL.pkl', 'SMPLX_NEUTRAL.npz')
+        model_file = next((model_file / name for name in model_names
                            if (model_file / name).is_file()), None)
         if model_file is None:
             parser.error("Shared correspondence requires a neutral SMPL-X model in --smplx-model")
     elif model_file.stem.upper() != "SMPLX_NEUTRAL":
         parser.error("Shared correspondence requires a neutral SMPL-X model or model directory")
+    if args.contact_refine:
+        if model_file.is_dir():
+            model_file = model_file / 'SMPLX_NEUTRAL.npz'
+        if not model_file.is_file() or model_file.suffix != '.npz':
+            parser.error('Default contact refinement requires SMPLX_NEUTRAL.npz')
     RUNTIME.mkdir(parents=True, exist_ok=True)
     lock = (RUNTIME / "run.lock").open("w")
     try:
@@ -327,14 +350,20 @@ def main() -> None:
         slice_name = f"f{args.start}-{args.end if args.end >= 0 else 'end'}_s{args.stride}_n{args.max_frames or 'all'}"
         if args.tag:
             slice_name += "_" + args.tag
+        if args.contact_refine:
+            slice_name += '_contact_v1'
         run_dir = OUTPUT / name / slice_name
         artifact_dir = ARTIFACT / "runs" / name / slice_name
         final = run_dir / "trajectory.npz"
         upstream_result = artifact_dir / "retarget.npz"
         log_path = RUNTIME / f"{name}_{slice_name}.log"
-        identity = {"source": source, "cache_id": cache_id, "iters": args.iters,
+        identity = {"source": source, "output_schema": "control_50hz_qvel_v2",
+                    "resampler_sha256": sha256(METHOD / 'resampling.py'), "cache_id": cache_id, "iters": args.iters,
                     "pose_init_iters": args.pose_init_iters, "stream_chunk_frames": args.stream_chunk_frames,
                     **solver_identity}
+        if args.contact_refine:
+            from motion_retargeting.umr.contact import algorithm_identity, VERSION
+            identity['contact_refinement'] = {'version': VERSION, 'code': algorithm_identity()}
         signature = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
         frame_ids = np.asarray(source["selected_frame_ids"], dtype=np.int64)
         run_record_path = run_dir / "run.json"
@@ -342,7 +371,10 @@ def main() -> None:
             record = json.loads(run_record_path.read_text())
             if record.get("signature") == signature:
                 with np.load(final, allow_pickle=False) as existing:
-                    if existing["qpos"].shape == (len(frame_ids), model.nq) and np.isfinite(existing["qpos"]).all():
+                    if (existing["qpos"].shape == (len(frame_ids), model.nq) and np.isfinite(existing["qpos"]).all()
+                            and "qvel" in existing and existing["qvel"].shape == (len(frame_ids), model.nv)
+                            and np.isfinite(existing["qvel"]).all()
+                            and float(existing["fps"]) == CONTROL_FPS):
                         print(f"[HiPHI UMR] reuse completed {final}", flush=True)
                         status["complete_clips"].append(str(final))
                         update("resumed_complete", sequence=name)
@@ -381,14 +413,18 @@ def main() -> None:
             update("prepared", sequence=name)
             continue
         qpos, fps, surface_scale = validate_output(upstream_result, model, frame_ids)
+        if not np.isclose(fps, CONTROL_FPS, atol=1e-8, rtol=0):
+            raise ValueError(f'Native solver changed the 50 Hz control clock: {fps}')
+        qvel = qpos_velocities(model, qpos, fps)
         run_dir.mkdir(parents=True, exist_ok=True)
         with np.load(upstream_result, allow_pickle=False) as data:
             ground_z = float(np.asarray(data["ground_z"]).reshape(-1)[0])
         temporary_final = run_dir / "trajectory.tmp.npz"
-        np.savez_compressed(temporary_final, qpos=qpos, fps=np.float64(fps), frame_ids=frame_ids,
+        np.savez_compressed(temporary_final, qpos=qpos, qvel=qvel, fps=np.float64(fps),
+                            control_dt=np.float64(1 / fps), frame_ids=frame_ids,
                             joint_names=np.asarray(joint_names), root_pos=qpos[:, :3], root_quat_wxyz=qpos[:, 3:7],
                             time_seconds=np.arange(len(qpos)) / fps, source_time_seconds=frame_ids / source["source_fps"],
-                            original_frame_ids=np.asarray(source["original_frame_ids"], dtype=np.int64),
+                            original_frame_ids=np.asarray(source["original_frame_ids"], dtype=np.float64),
                             original_time_seconds=np.asarray(source["original_time_seconds"], dtype=np.float64),
                             original_fps=np.float64(source["original_fps"]),
                             method_id=np.asarray("umr"), clip_id=np.asarray(source["motion_id"]),
@@ -398,8 +434,20 @@ def main() -> None:
                             source_points_to_retarget_matrix=(np.asarray([[1, 0, 0], [0, 0, -1], [0, 1, 0]], dtype=np.float64)
                                                               if source["output_up"] == "y" else np.eye(3)),
                             source_gender=np.asarray(source["fitted_gender"]),
-                            source_betas=np.asarray(source["fitted_betas"], dtype=np.float64))
-        temporary_final.replace(final)
+                            source_betas=np.asarray(source["fitted_betas"], dtype=np.float64),
+                            **({'original_frame_count': np.int64(source['original_frame_count'])}
+                               if source['original_frame_count'] is not None else {}))
+        native_final = run_dir / 'native_trajectory.npz' if args.contact_refine else final
+        temporary_final.replace(native_final)
+        contact_report = None
+        if args.contact_refine:
+            from motion_retargeting.umr.contact import refine_file
+            update('contact_refinement', sequence=name)
+            contact_report = refine_file(native_final, run_dir, source_dir=source['sequence_dir'],
+                                         source_model_path=model_file, overwrite=True)
+            if not contact_report['accepted']:
+                update('contact_rejected', sequence=name, quality_flags=contact_report['quality_flags'])
+                raise RuntimeError(f'Contact acceptance failed: {contact_report["quality_flags"]}; {run_dir}')
         diagnostics_path = upstream_result.with_name(upstream_result.stem + "_diagnostics.npz")
         diagnostics = {}
         if diagnostics_path.is_file():
@@ -412,12 +460,15 @@ def main() -> None:
                   "trajectory_path": str(final), "upstream_result": str(upstream_result), "log_path": str(log_path),
                   "config_path": str(config_path), "shared_config": str(shared_path), "cache_id": cache_id,
                   "elapsed_seconds": time.monotonic() - started, "frames": len(qpos), "fps": fps,
+                  "control_dt": 1 / fps, "qvel_convention": "MuJoCo tangent velocity; central pose difference, one-sided endpoints",
                   "surface_scale": surface_scale, "ground_z": ground_z, "source": source, "points": args.points,
                   **solver_identity,
                   "training_epochs": args.epochs, "smplx_model_sha256": model_digest,
                   "surface_source": "Licensed SMPL-X model with source fitted betas and fitted gender; HiPHI BVH fit",
-                  "common_postprocessing": ("none; official UMR LQR filter retained" if args.trajectory_filter == "lqr"
-                                            else "none; official UMR trajectory filter disabled"), **diagnostics}
+                  "common_postprocessing": ('source-informed foot contact refinement after native UMR/LQR'
+                      if args.contact_refine else ("none; official UMR LQR filter retained" if args.trajectory_filter == "lqr"
+                      else "none; official UMR trajectory filter disabled")),
+                  'contact_refinement': contact_report, **diagnostics}
         atomic_json(run_record_path, record)
         status["complete_clips"].append(str(final))
         update("clip_complete", sequence=name)

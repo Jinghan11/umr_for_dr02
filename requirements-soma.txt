@@ -1,0 +1,3 @@
+# Optional native SOMA branch; install after requirements.txt.
+py-soma-x==0.3.4
+usd-core==26.11

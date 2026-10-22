@@ -39,26 +39,16 @@ def atomic_json(path: Path, value: dict) -> None:
 
 
 def select_bvh(path: Path, start: int, end: int, stride: int, max_frames: int):
-    """Return an unmodified hierarchy and selected animation channel rows."""
-    import numpy as np
-
-    lines = path.read_text().splitlines()
-    marker = next((i for i, line in enumerate(lines) if line.strip() == "MOTION"), None)
-    if marker is None or not lines[marker + 1].strip().startswith("Frames:"):
-        raise ValueError(f"Invalid BVH motion header: {path}")
-    count = int(lines[marker + 1].split(":", 1)[1])
-    frame_time = float(lines[marker + 2].split(":", 1)[1])
-    rows = [line for line in lines[marker + 3:] if line.strip()]
-    if len(rows) != count or count < 1 or not np.isfinite(frame_time) or frame_time <= 0:
-        raise ValueError(f"BVH frame count or timing is invalid: {path}")
-    ids = np.arange(start, count if end < 0 else min(count, end), stride, dtype=np.int64)
-    if max_frames:
-        ids = ids[:max_frames]
-    if not len(ids):
-        raise ValueError("The selected original frame range is empty")
-    selected = lines[:marker + 1] + [f"Frames: {len(ids)}", f"Frame Time: {frame_time * stride:.12g}"]
-    selected.extend(rows[int(i)] for i in ids)
-    return "\n".join(selected) + "\n", ids, count, frame_time
+    """Resample raw BVH at 50 Hz before fitting; no second stride is allowed."""
+    if stride != 1:
+        raise ValueError('50 Hz conversion requires stride 1; raw BVH is resampled on the control clock')
+    sys.path.insert(0, str(ROOT))
+    from motion_retargeting.umr.resampling import resample_bvh
+    with tempfile.TemporaryDirectory(prefix='hiphi_50hz_') as directory:
+        selected = Path(directory) / 'motion_actor.bvh'
+        timing = resample_bvh(path, selected, start=start, end=end, max_frames=max_frames)
+        return (selected.read_text(), timing['source_frame_ids'],
+                timing['source_frame_count'], timing['source_frame_time'])
 
 
 def main() -> None:
@@ -70,13 +60,13 @@ def main() -> None:
     parser.add_argument("--smplx-model", type=Path, default=DEFAULT_MODEL)
     parser.add_argument("--start", type=int, default=0, help="Original frame, inclusive")
     parser.add_argument("--end", type=int, default=-1, help="Original frame, exclusive; -1 selects to end")
-    parser.add_argument("--stride", type=int, default=3)
+    parser.add_argument("--stride", type=int, default=1, help="Must be 1; raw motion is resampled to 50 Hz")
     parser.add_argument("--max-frames", type=int, default=0, help="Maximum selected frames; zero selects all")
     parser.add_argument("--mink-iters", type=int, default=10)
     parser.add_argument("--progress", action="store_true")
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
-    if args.start < 0 or args.end < -1 or args.stride < 1 or args.max_frames < 0 or args.mink_iters < 1:
+    if args.start < 0 or args.end < -1 or args.stride != 1 or args.max_frames < 0 or args.mink_iters < 1:
         parser.error("Invalid frame range, stride or iteration count")
     source_dir, output_dir = args.data.resolve(), args.output_dir.resolve()
     if source_dir == output_dir:
@@ -120,7 +110,8 @@ def main() -> None:
         "source_bvh": str(source_bvh), "source_bvh_sha256": sha256(source_bvh),
         "source_metadata": str(metadata_path), "source_metadata_sha256": sha256(metadata_path),
         "source_frame_count": source_count, "source_frame_time": source_dt,
-        "source_frame_ids": frame_ids.tolist(), "output_frame_time": source_dt * args.stride,
+        "source_frame_ids": frame_ids.tolist(), "output_frame_time": 0.02,
+        "resampling": "raw BVH local SO(3) SLERP and linear positions before body fitting; 50 Hz",
         "betas_source": str(args.betas.resolve()), "betas_source_sha256": sha256(args.betas),
         "beta_actor_id": beta_actor_id, "shape_policy": "reuse_same_actor_original_betas",
         "smplx_model": str(args.smplx_model.resolve()), "smplx_model_sha256": sha256(args.smplx_model),
@@ -151,6 +142,7 @@ def main() -> None:
                 source_frame_ids=frame_ids, source_time_seconds=frame_ids.astype(np.float64) * source_dt,
                 source_bvh=np.asarray(str(source_bvh)), source_bvh_sha256=np.asarray(manifest["source_bvh_sha256"]),
                 source_fps=np.asarray(1.0 / source_dt), frame_time=np.asarray(result.frame_time),
+                source_frame_count=np.int64(source_count),
                 model_type=np.asarray("smplx"), coordinate_up=np.asarray("y"), output_up=np.asarray("y"),
                 fitted_joints=result.fitted_joints, per_frame_residuals=result.residuals,
                 final_losses=result.final_losses, pipeline=np.asarray("official_hiphi2smplx_body_only"),

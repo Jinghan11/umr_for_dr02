@@ -15,6 +15,10 @@ import time
 import zipfile
 
 import numpy as np
+try:
+    from .resampling import CONTROL_FPS, qpos_velocities
+except ImportError:
+    from resampling import CONTROL_FPS, qpos_velocities
 
 METHOD = Path(__file__).resolve().parent
 ROOT = METHOD.parents[1]
@@ -45,7 +49,7 @@ def file_identity(path):
 
 def algorithm_identity():
     # Hash the vendored source itself; a nested .git directory is not required.
-    paths = [METHOD / "run.py", METHOD / "smpl_surface_adapter.py", METHOD / "requirements.lock.txt",
+    paths = [METHOD / "run.py", METHOD / "resampling.py", METHOD / "smpl_surface_adapter.py", METHOD / "requirements.lock.txt",
              UPSTREAM / "humanoid_retarget_defaults.json", UPSTREAM / "requirements-umr.txt"]
     paths.extend(UPSTREAM.rglob("*.py"))
     return json_sha256({str(path.relative_to(METHOD)): file_sha256(path)
@@ -70,6 +74,8 @@ def cache_identity(config, source, template, algorithm, robot):
         source_template = Path(str(np.asarray(data["template_path"]).item())).resolve()
     if not np.isfinite(fps) or fps <= 0:
         raise ValueError("Source fps must be positive and finite")
+    if not np.isclose(fps, CONTROL_FPS, atol=1e-8, rtol=0):
+        raise ValueError('Prepared surfaces must use the 50 Hz control clock; reconstruct from a 50 Hz source rather than relabel fps')
     return {"version": CACHE_VERSION, "source": {**file_identity(source), "frames": frames, "fps": fps},
             "template": file_identity(template), "source_template": file_identity(source_template),
             "config_sha256": json_sha256(config), "algorithm_sha256": algorithm,
@@ -272,7 +278,8 @@ def run_inputs(args):
             validate_motion(qpos, np.asarray(result["frame_ids"]), fps, identity, model.nq)
             if not np.isfinite(surface_scale) or surface_scale <= 0:
                 raise ValueError("UMR output has an invalid surface scale")
-            np.savez_compressed(final, qpos=qpos, fps=np.float64(fps),
+            np.savez_compressed(final, qpos=qpos, qvel=qpos_velocities(model, qpos, fps),
+                                control_dt=np.float64(1 / fps), fps=np.float64(fps),
                                 joint_names=np.asarray(joint_names), root_pos=qpos[:, :3],
                                 root_quat_wxyz=qpos[:, 3:7],
                                 method_id=np.asarray("umr"), clip_id=np.asarray(clip_id),

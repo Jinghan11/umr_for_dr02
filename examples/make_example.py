@@ -13,7 +13,7 @@ def generate(destination, frames=30):
     poses = np.zeros((frames,165), np.float32)
     poses[:,18*3+2] = 0.08*np.sin(phase)
     transl = np.zeros((frames,3), np.float32); transl[:,1] = 1.7
-    fps=30.0; ids=np.arange(frames,dtype=np.int64)
+    fps=50.0; ids=np.arange(frames,dtype=np.int64)
     np.savez_compressed(destination/'motion_actor_smplx.npz', poses=poses, transl=transl,
         betas=np.zeros(10,np.float32), gender=np.asarray('neutral'), model_type=np.asarray('smplx'),
         mocap_framerate=np.asarray(fps), output_up=np.asarray('y'), source_frame_ids=ids,
@@ -32,7 +32,9 @@ def generate(destination, frames=30):
     joint=model.joint('left_shoulder_y_joint'); adr=joint.qposadr[0]
     qpos[:,adr]=np.clip(.1*np.sin(phase),*joint.range)
     names=[model.joint(j).name for j in range(model.njnt) if model.jnt_qposadr[j]>=7]
-    np.savez_compressed(destination/'robot_playback.npz',qpos=qpos, fps=np.asarray(fps),
+    from motion_retargeting.umr.resampling import qpos_velocities
+    np.savez_compressed(destination/'robot_playback.npz',qpos=qpos, qvel=qpos_velocities(model,qpos,fps),
+        fps=np.asarray(fps), control_dt=np.asarray(1/fps), time_seconds=ids/fps,
         frame_ids=ids, original_frame_ids=ids, original_fps=np.asarray(fps),
         original_time_seconds=ids/fps, root_pos=qpos[:,:3], root_quat_wxyz=qpos[:,3:7],
         joint_names=np.asarray(names), synthetic=np.asarray(True),

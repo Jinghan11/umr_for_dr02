@@ -1,6 +1,6 @@
 """Complete body-only HiPHI BVH conversion with the pinned official converter.
 
-This wrapper selects original frames once, estimates/validates a fixed shape,
+This wrapper samples raw BVH transforms at 50 Hz, estimates/validates a fixed shape,
 and invokes ``hiphi2smplx.pipeline.fit_bvh`` for the complete capture. It never
 constructs or stores per-frame SMPL-X surface vertices. Jaw, eyes and fingers
 remain zero because the public converter fits 22 body joints only.
@@ -25,6 +25,7 @@ from typing import Callable
 
 from .shape import (DEFAULT_MODEL, atomic_json, fit_shape,
                     read_static_skeleton, sha256)
+from ..resampling import CONTROL_FPS, sample_times, resample_bvh
 
 METHOD = Path(__file__).resolve().parents[1]
 ROOT = METHOD.parents[1]
@@ -32,7 +33,7 @@ CONVERTER = METHOD / 'hiphi2smplx'
 DEFAULT_TEMP = ROOT / '.retarget_runtime/hiphi_curated/tmp'
 CONVERTER_COMMIT = '65e51315ebbc82b2f0ff8e35a94565beb1b345e1'
 DATASET_REVISION = '16ea8072094427ba7f61541edcb2aaaff5af23fd'
-PIPELINE_VERSION = 'official_hiphi2smplx_complete_body_v1'
+PIPELINE_VERSION = 'official_hiphi2smplx_control_clock_v2'
 
 
 def _now() -> str:
@@ -74,32 +75,7 @@ def _inspect_bvh(path: Path) -> tuple[list[str], int, float]:
     return hierarchy, count, frame_time
 
 
-def _select_complete_bvh(source: Path, destination: Path, hierarchy: list[str],
-                         source_count: int, frame_time: float, stride: int) -> None:
-    """Stream all source rows and retain IDs 0,stride,... through capture end."""
-    selected_count = (source_count + stride - 1) // stride
-    count = 0
-    with source.open(encoding='utf-8') as stream, destination.open('w', encoding='utf-8') as output:
-        output.write('\n'.join(hierarchy) + '\n')
-        output.write(f'Frames: {selected_count}\nFrame Time: {frame_time * stride:.17g}\n')
-        for line in stream:
-            if line.strip() == 'MOTION':
-                break
-        next(stream)
-        next(stream)
-        for line in stream:
-            if not line.strip():
-                continue
-            if count >= source_count:
-                raise ValueError('BVH has more frame rows than its declared count')
-            if count % stride == 0:
-                output.write(line.rstrip('\r\n') + '\n')
-            count += 1
-    if count != source_count:
-        raise ValueError(f'BVH declares {source_count} frames but contains {count}')
-
-
-def _validate_output(path: Path, *, frame_ids, source_dt: float, stride: int,
+def _validate_output(path: Path, *, frame_ids, source_dt: float, target_fps: float,
                      betas, source_hash: str) -> None:
     import numpy as np
     with np.load(path, allow_pickle=False) as value:
@@ -111,13 +87,15 @@ def _validate_output(path: Path, *, frame_ids, source_dt: float, stride: int,
             if value[key].shape != shape or not np.isfinite(value[key]).all():
                 raise ValueError(f'Converted {key} has invalid shape/numerics')
         if not np.array_equal(value['source_frame_ids'], frame_ids):
-            raise ValueError('Original frame IDs disagree with complete stride selection')
+            raise ValueError('Source frame coordinates disagree with control-clock sampling')
         if not np.allclose(value['source_time_seconds'], frame_ids * source_dt, atol=1e-12, rtol=0):
             raise ValueError('Original timestamps disagree with original frame IDs')
         if not np.allclose(value['betas'], betas, atol=1e-7, rtol=0):
             raise ValueError('Converter changed the fixed actor betas')
-        if not np.isclose(float(value['frame_time']), source_dt * stride, atol=1e-12, rtol=0):
+        if not np.isclose(float(value['frame_time']), 1 / target_fps, atol=1e-12, rtol=0):
             raise ValueError('Converter timing changed or source was sampled twice')
+        if not np.isclose(float(value['mocap_framerate']), target_fps, atol=1e-10, rtol=0):
+            raise ValueError('Converted fps differs from the control clock')
         if str(value['source_bvh_sha256']) != source_hash:
             raise ValueError('Converted source signature disagrees')
         if str(value['gender']) != 'neutral' or np.any(value['poses'][:, 66:] != 0):
@@ -153,7 +131,7 @@ def _progress_heartbeat(callback, state: dict):
 
 
 def convert_sequence(source_dir: Path, output_dir: Path, *, shape_record: dict | None = None,
-                     model_path: Path = DEFAULT_MODEL, stride: int = 3,
+                     model_path: Path = DEFAULT_MODEL, target_fps: float = CONTROL_FPS,
                      temp_root: Path = DEFAULT_TEMP,
                      progress_callback: Callable[[dict], None] | None = None,
                      mink_iterations: int = 10) -> dict:
@@ -171,8 +149,8 @@ def convert_sequence(source_dir: Path, output_dir: Path, *, shape_record: dict |
         (source_dir, output_dir, model_path, temp_root)]
     if source_dir == output_dir or source_dir in output_dir.parents:
         raise ValueError('Converted outputs must be separate from original capture directory')
-    if not isinstance(stride, int) or stride != 3 or mink_iterations < 1:
-        raise ValueError('Curated authorization requires original stride 3 and positive iterations')
+    if not np.isfinite(target_fps) or target_fps <= 0 or mink_iterations < 1:
+        raise ValueError('Positive target fps and iteration count required')
     bvh, source_metadata = source_dir / 'motion_actor.bvh', source_dir / 'metadata.json'
     metadata = json.loads(source_metadata.read_text())
     if str(metadata.get('dataset', '')).lower() != 'hiphi':
@@ -183,9 +161,9 @@ def convert_sequence(source_dir: Path, output_dir: Path, *, shape_record: dict |
         raise ValueError('Curated conversion rejects object tracks')
     if metadata.get('conversion_source'):
         raise ValueError('Expected raw BVH source; refusing to sample a converted sequence again')
-    hierarchy, source_count, source_dt = _inspect_bvh(bvh)
+    _hierarchy, source_count, source_dt = _inspect_bvh(bvh)
     if not 89. <= 1. / source_dt <= 91.:
-        raise ValueError('Expected approximately 90 Hz raw HiPHI; refusing possible duplicate stride')
+        raise ValueError('Expected approximately 90 Hz raw HiPHI; refusing to resample converted input')
     if int(metadata.get('frame_count', source_count)) != source_count:
         raise ValueError('BVH and source metadata frame counts disagree')
     if not math.isclose(float(metadata.get('fps', 1. / source_dt)), 1. / source_dt, rel_tol=1e-5):
@@ -207,13 +185,15 @@ def convert_sequence(source_dir: Path, output_dir: Path, *, shape_record: dict |
     converter_source = json.loads((CONVERTER / 'SOURCE.json').read_text())
     if converter_source.get('commit') != CONVERTER_COMMIT:
         raise ValueError('Pinned official hiphi2smplx commit differs')
-    frame_ids = np.arange(0, source_count, stride, dtype=np.int64)
+    output_times = sample_times(source_count, source_dt, target_fps)
+    frame_ids = output_times / source_dt
     signature = {'pipeline': PIPELINE_VERSION, 'wrapper_sha256': sha256(Path(__file__)),
                  'source_bvh_sha256': source_hash, 'source_metadata_sha256': sha256(source_metadata),
                  'shape_cache_key': shape_record['cache_key'],
                  'betas_sha256': shape_record['betas_sha256'], 'smplx_model_sha256': model_hash,
                  'converter_commit': CONVERTER_COMMIT, 'dataset_revision': DATASET_REVISION,
-                 'stride': stride, 'mink_iterations': mink_iterations}
+                 'target_fps': target_fps, 'resampler_sha256': sha256(METHOD / 'resampling.py'),
+                 'mink_iterations': mink_iterations}
     output_dir.mkdir(parents=True, exist_ok=True)
     temp_root.mkdir(parents=True, exist_ok=True)
     destination, manifest_path = output_dir / 'motion_actor_smplx.npz', output_dir / 'conversion_manifest.json'
@@ -223,9 +203,10 @@ def convert_sequence(source_dir: Path, output_dir: Path, *, shape_record: dict |
             old = json.loads(manifest_path.read_text())
             if (old.get('status') == 'complete' and old.get('signature') == signature and
                 old.get('output_sha256') == sha256(destination) and (output_dir / 'metadata.json').is_file()):
-                _validate_output(destination, frame_ids=frame_ids, source_dt=source_dt, stride=stride,
+                _validate_output(destination, frame_ids=frame_ids, source_dt=source_dt, target_fps=target_fps,
                                  betas=betas, source_hash=source_hash)
                 return old
+            raise FileExistsError('Existing conversion is incompatible; use a new output directory for 50 Hz conversion')
         manifest = {'status': 'converting', 'signature': signature, 'started_at': _now(),
                     'source_dir': str(source_dir), 'source_bvh': str(bvh), 'source_bvh_sha256': source_hash,
                     'source_metadata': str(source_metadata), 'source_metadata_sha256': sha256(source_metadata),
@@ -234,8 +215,11 @@ def convert_sequence(source_dir: Path, output_dir: Path, *, shape_record: dict |
                     'source_fps': 1. / source_dt, 'source_frame_ids': frame_ids.tolist(),
                     'source_duration_seconds': source_count * source_dt,
                     'last_original_timestamp_seconds': float(frame_ids[-1] * source_dt),
-                    'stride': stride, 'complete_capture': True, 'output_frames': len(frame_ids),
-                    'output_frame_time': source_dt * stride, 'output_fps': 1. / (source_dt * stride),
+                    'complete_capture': True, 'output_frames': len(frame_ids),
+                    'output_frame_time': 1 / target_fps, 'output_fps': target_fps,
+                    'resampling': 'raw BVH local rotation SLERP and linear positions before body fitting',
+                    'source_frame_ids_semantics': 'fractional original-frame coordinates at output timestamps',
+                    'unrepresented_tail_seconds': (source_count - 1) * source_dt - output_times[-1],
                     'converter': converter_source, 'conversion_scope': '22_body_joints',
                     'source_dataset': 'HiPHI', 'dataset_revision': DATASET_REVISION,
                     'unfitted_parts': ['jaw', 'eyes', 'fingers'], 'hands_fitted': False,
@@ -251,7 +235,7 @@ def convert_sequence(source_dir: Path, output_dir: Path, *, shape_record: dict |
             with tempfile.TemporaryDirectory(prefix='body_' + str(metadata.get('motion_id', 'unknown')) + '_',
                                              dir=temp_root) as temporary:
                 selected = Path(temporary) / 'motion_actor.bvh'
-                _select_complete_bvh(bvh, selected, hierarchy, source_count, source_dt, stride)
+                resample_bvh(bvh, selected, target_fps=target_fps)
                 state = {'motion_id': metadata.get('motion_id'), 'phase': 'official_fit_bvh',
                          'source_frames': source_count, 'output_frames': len(frame_ids)}
                 with _progress_heartbeat(progress_callback, state):
@@ -261,7 +245,7 @@ def convert_sequence(source_dir: Path, output_dir: Path, *, shape_record: dict |
                 save_result(result_file, result)
                 with np.load(result_file, allow_pickle=False) as saved:
                     payload = {key: saved[key] for key in saved.files}
-                payload.update(source_frame_ids=frame_ids, source_time_seconds=frame_ids * source_dt,
+                payload.update(source_frame_ids=frame_ids, source_time_seconds=output_times,
                                source_fps=np.asarray(1. / source_dt), frame_time=np.asarray(result.frame_time),
                                source_frame_count=np.asarray(source_count, dtype=np.int64),
                                source_bvh=np.asarray(str(bvh)), source_bvh_sha256=np.asarray(source_hash),
@@ -275,12 +259,12 @@ def convert_sequence(source_dir: Path, output_dir: Path, *, shape_record: dict |
                                shape_fit_method=np.asarray(shape_record['method']),
                                hands_fit_embedded=np.asarray(False))
                 np.savez_compressed(result_file, **payload)
-                _validate_output(result_file, frame_ids=frame_ids, source_dt=source_dt, stride=stride,
+                _validate_output(result_file, frame_ids=frame_ids, source_dt=source_dt, target_fps=target_fps,
                                  betas=betas, source_hash=source_hash)
                 _publish_result(result_file, destination)
             derived = dict(metadata)
-            derived.update(frame_count=len(frame_ids), fps=1. / (source_dt * stride),
-                           duration_sec=len(frame_ids) * source_dt * stride,
+            derived.update(frame_count=len(frame_ids), fps=target_fps,
+                           duration_sec=len(frame_ids) / target_fps,
                            conversion_source={'source_bvh': str(bvh), 'source_frame_count': source_count,
                                               'source_frame_ids': frame_ids.tolist(), 'source_fps': 1. / source_dt,
                                               'converter': converter_source, 'scope': '22_body_joints',
