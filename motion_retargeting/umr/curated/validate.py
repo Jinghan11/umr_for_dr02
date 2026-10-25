@@ -81,7 +81,7 @@ def _stats(values):
             "max": float(values.max())}
 
 
-def validate_trajectory(path, *, expected_frames=None, expected_original_frame_ids=None,
+def validate_trajectory(path, *, model_path=ROBOT_XML, expected_frames=None, expected_original_frame_ids=None,
                         expected_original_fps=None, output_dir=None, motion_row=None) -> dict:
     """Validate completeness and measure every frame without repairing anything.
 
@@ -115,10 +115,10 @@ def validate_trajectory(path, *, expected_frames=None, expected_original_frame_i
         trajectory_record = {key: _scalar(packed, key) for key in
                              ("signature", "source_input_sha256", "smplx_model_sha256", "config_sha256",
                               "actor_gender", "fitted_gender", "shape_fit_method") if key in packed}
-    model = mujoco.MjModel.from_xml_path(str(ROBOT_XML))
-    if (model.nq, model.nv, model.nu) != (38, 37, 31):
+    model = mujoco.MjModel.from_xml_path(str(model_path))
+    if (model.nq, model.nv, model.nu) not in ((38,37,31),(36,35,29)):
         raise ValueError("Official DR02 Pro dimensions changed")
-    if qpos.ndim != 2 or qpos.shape[1] != 38 or not len(qpos):
+    if qpos.ndim != 2 or qpos.shape[1] != model.nq or not len(qpos):
         raise ValueError(f"Expected nonempty qpos[T,38], found {qpos.shape}")
     frames = len(qpos)
     if expected_frames is not None and frames != int(expected_frames):
@@ -159,7 +159,7 @@ def validate_trajectory(path, *, expected_frames=None, expected_original_frame_i
     joints = [j for j in range(model.njnt) if int(model.jnt_type[j]) in
               (int(mujoco.mjtJoint.mjJNT_HINGE), int(mujoco.mjtJoint.mjJNT_SLIDE))]
     expected_names = [model.joint(j).name for j in joints]
-    if len(names) != 31 or names != expected_names:
+    if len(names) != model.nu or names != expected_names:
         raise ValueError("Joint names/order differ from official DR02 Pro")
     addresses = model.jnt_qposadr[joints]
     lower, upper = model.jnt_range[joints].T
@@ -203,7 +203,7 @@ def validate_trajectory(path, *, expected_frames=None, expected_original_frame_i
     flags.extend(foot_slip['quality_flags'])
     result = {"status": "validated", "validated": True, "quality_flagged": bool(flags),
               "quality_flags": flags, "trajectory_path": str(path), "trajectory_sha256": _sha256(path),
-              "frames": frames, "qpos_shape": [frames, 38], "fps": fps, "original_fps": original_fps,
+              "frames": frames, "qpos_shape": [frames, model.nq], "fps": fps, "original_fps": original_fps,
               "control_dt": control_dt, "qvel_present": qvel is not None,
               "duration_seconds": frames / fps, "source_sample_span_seconds": float(times[-1]),
               "finite_failure_frames": 0, "joint_names": expected_names,
@@ -219,8 +219,8 @@ def validate_trajectory(path, *, expected_frames=None, expected_original_frame_i
               "collision_penetration_frames_over_1mm": int((penetration > .001001).sum()),
               "collision_penetration_frames_over_10mm": int((penetration > .010001).sum()),
               "foot_slip": foot_slip,
-              "qp_status_counts": solver_counts, "robot_xml": str(ROBOT_XML),
-              "robot_xml_sha256": _sha256(ROBOT_XML), "source": trajectory_record,
+              "qp_status_counts": solver_counts, "robot_xml": str(model_path),
+              "robot_xml_sha256": _sha256(model_path), "source": trajectory_record,
               "definitions": {"floor": "z=0; exact official collision primitive support points and collision mesh vertices",
                   "limits": "all official scalar joint ranges, including runtime-disabled limit constraints",
                   "quality_policy": "1e-5 quaternion/range tolerance; ground depths >1.001mm flagged",

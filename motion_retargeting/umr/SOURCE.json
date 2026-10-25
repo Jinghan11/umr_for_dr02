@@ -6,12 +6,12 @@
   "implementation": "official-adapted",
   "license": "upstream/LICENSE",
   "official_bones_seed_adapter": "SOMA BVH and shape runtime; not SMPL",
-  "adaptation": "New explicitly estimated SMPL moving-surface loader, native SMPL LBS semantic parts, and DR02 Pro canonical-pose configuration; official correspondence autoencoder and constrained surface retargeter retained.",
+  "adaptation": "New explicitly estimated SMPL moving-surface loader, native SMPL LBS semantic parts, and DR02 Pro canonical-pose configuration; official correspondence autoencoder and constrained surface retargeter retained. The 2026-10-26 production dependency update includes optional 29DOF hooks, target diagnostics and bounded weighted LQR; the batch execution speed layer is separate under tools/bones_soma_batch_opt.",
   "source_surface_limitation": "Original source gender/betas/surfaces absent; shared licensed SMPL template aligned to observed rest skeleton, then real pose blend + LBS; no claim of original body shape.",
   "vendor": {
     "format": "plain-directory",
     "manifest": "VENDOR_MANIFEST.json",
-    "manifest_sha256": "958e1cbb7fe1824be27f8ff38b54096d95fc5dd3795ac8cb84a32f6517c62d91",
+    "manifest_sha256": "b035224c917119645fd152f9ac069a48b5e111f0c1af6876b8ec6c284b8e1a15",
     "validation": "All recorded files must exist with their recorded size; executable source, text configuration and license hashes are checked at runtime. Large binary asset hashes are recorded for full synchronization audits.",
     "distribution": "Source-only subset; no dataset or body model distributed."
   }

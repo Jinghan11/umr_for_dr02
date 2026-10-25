@@ -36,7 +36,7 @@ def sha256(path):
 
 
 _LOADED_ALGORITHM_SHA256 = {
-    p.name: sha256(p) for p in sorted(Path(__file__).parent.glob('contact*.py'))
+    p.name: sha256(p) for p in sorted([*Path(__file__).parent.glob('contact*.py'), Path(__file__).parent/'revision29.py'])
 }
 
 
@@ -192,8 +192,8 @@ def refine_payload(payload, source_dir, *, model_path=ROBOT_XML,
     fps = float(_scalar(payload, 'fps'))
     model_path = Path(model_path).resolve()
     model = mujoco.MjModel.from_xml_path(str(model_path))
-    if (model.nq, model.nv) != (38, 37) or qpos.ndim != 2 or qpos.shape[1] != model.nq:
-        raise ValueError('Contact refinement requires DR02 qpos[T,38]')
+    if (model.nq, model.nv) not in ((38, 37),(36,35)) or qpos.ndim != 2 or qpos.shape[1] != model.nq:
+        raise ValueError('Contact refinement requires matching DR02 31DOF or 29DOF qpos')
     if len(qpos) < 3 or not np.isfinite(qpos).all() or not np.isfinite(fps) or fps <= 0:
         raise ValueError('Expected at least three finite poses and positive fps')
     if not np.allclose(np.linalg.norm(qpos[:, 3:7], axis=1), 1., atol=1e-5):

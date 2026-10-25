@@ -13,6 +13,8 @@ from scipy.optimize import minimize
 
 
 def restore_frame(model, qpos, foot_geom_ids, local_points, support, anchors, *,
+                  revision29_multiplier=0., motion_neighbors=None,
+                  motion_velocity_weight=3., motion_acceleration_weight=4.,
                   clearance=.001, aligned_qpos=None, lower=None, upper=None,
                   addresses=None, neighbor_correction=None, target_centers=None,
                   source_gap_targets=None, source_height_weight=80., swing_weight=12.,
@@ -152,11 +154,36 @@ def restore_frame(model, qpos, foot_geom_ids, local_points, support, anchors, *,
 
     weights = np.r_[np.ones(3), np.full(width - 3, .12)]
 
+    neutral_scale=np.zeros(width)
+    velocity_scale=np.zeros(width)
+    acceleration_scale=np.zeros(width)
+    if revision29_multiplier:
+        from .revision29 import weights as revision_weights, NEUTRAL_COST
+        scale=np.sqrt(revision_weights(model,addresses,revision29_multiplier))
+        weights *= scale
+        neutral_scale[3:]=np.sqrt(NEUTRAL_COST)*scale[3:]
+        velocity_scale[3:]=motion_velocity_weight*.12*scale[3:]
+        acceleration_scale[3:]=motion_acceleration_weight*.12*scale[3:]
+    neighbors = [] if motion_neighbors is None else list(motion_neighbors)
+    if any(np.asarray(value).shape != (width,) or not np.isfinite(value).all() for value in neighbors):
+        raise ValueError('Motion neighbors must be finite root/leg poses')
+
     def objective(change):
         soft, jacobian = evaluate(change)[4:]
         difference, temporal = change - candidate_change, change - neighbor
         cost = np.sum((weights * difference) ** 2) + .1 * np.sum((weights * temporal) ** 2) + soft @ soft
         gradient = 2 * weights**2 * (difference + .1 * temporal) + 2 * jacobian.T @ soft
+        neutral=baseline[addresses]+change
+        cost += np.sum((neutral_scale*neutral)**2)
+        gradient += 2*neutral_scale**2*neutral
+        for neighbor_pose in neighbors:
+            difference = neutral - neighbor_pose
+            cost += np.sum((velocity_scale*difference)**2)
+            gradient += 2*velocity_scale**2*difference
+        if len(neighbors)==2:
+            acceleration = 2*neutral-neighbors[0]-neighbors[1]
+            cost += np.sum((acceleration_scale*acceleration)**2)
+            gradient += 4*acceleration_scale**2*acceleration
         return cost, gradient
 
     before = evaluate(candidate_change)

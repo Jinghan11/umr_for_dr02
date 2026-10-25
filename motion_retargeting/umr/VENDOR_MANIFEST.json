@@ -4,7 +4,7 @@
   "base_commit": "d1cdaedaf67a827198da71c5fa831f48b2e51f91",
   "adaptation_patch": {
     "path": "upstream_adaptation.patch",
-    "sha256": "c454c2a09a2dd77cb649c6a225cc5770d1b76f4caa9138f1f0a71db720e78f18"
+    "sha256": "6a0246f54ba824d820c0ab0ee2bef53d8ef6ce5d56bc836d900ddc807bb8bc46"
   },
   "file_count": 80,
   "python_file_count": 42,
@@ -234,12 +234,12 @@
       "size_bytes": 11609
     },
     "scripts/retarget_smpl_to_humanoid_surface_vector.py": {
-      "sha256": "bd55b00a58451294539f9b682769f7799a2a629f066917fa26b4d6a8082de01a",
-      "size_bytes": 140504
+      "sha256": "c0625878311b7a23f8dbf3d794fd78fb75b91bce2e0cc9880f9ac55559e3888b",
+      "size_bytes": 142414
     },
     "scripts/retarget_smpl_to_humanoid_surface_vector_batch.py": {
-      "sha256": "326f600d6a18a27bc9567d3c74abddd6226dccf1199e506229cbbb3ad5eda7d5",
-      "size_bytes": 123901
+      "sha256": "f17659a7f08e39fb1f3fe501e3b8c652db1718ff54d0834c86a6850fafc1a6af",
+      "size_bytes": 125811
     },
     "scripts/shared_smplx_correspondence.py": {
       "sha256": "0251c48e71ad4ae58889b31f7049b65594148792ea5004c1a417014f71240928",

@@ -1,0 +1,101 @@
+{
+  "date": "2026-10-26T03:22:34.802915+08:00",
+  "purpose": "Execution speed optimization for large BONES-SEED SOMA batches",
+  "baseline": "Existing original-SOMA uniform CPU / 29DOF roll2 / 50 Hz / contact refinement, identity memo enabled in both arms",
+  "baseline_config_fingerprint_sha256": "90322e58a49ae87de2da7e29c0500ebe15213d6b2fe21ac4629d930fddfffbf7",
+  "full_frames_per_arm": 796,
+  "full_motion_count": 4,
+  "baseline_total_seconds": 434.54343740385957,
+  "optimized_total_seconds": 388.0084115578793,
+  "paired_speedup": 1.119933033562698,
+  "wall_reduction_fraction": 0.10708946871686653,
+  "exact_numeric_arrays_and_quality_metrics": true,
+  "safety_tests_passed": true,
+  "safety_test_count": 14,
+  "solver_instance_reused": false,
+  "numerical_parameters_changed": false,
+  "identity_memo_enabled_in_both_arms": true,
+  "comparison_policy": "All numeric arrays in native_trajectory.npz, trajectory.npz and contact_diagnostics.npz; numeric report fields except wall_seconds; flags/config/algorithm/model identity; native/final validation metrics; actual-process audit.",
+  "measurement_scope": "four complete clips; two test workers at most; changing production background load; not a full-corpus throughput claim",
+  "production_ledger_modified_by_benchmark": false,
+  "runtime_source_sha256": {
+    "tools/bones_soma_batch_opt/sitecustomize.py": "8700213ee7d37151dc3f96044d01194fff91a7b41f2510bacc59a39e8a64517b",
+    "tools/bones_soma_batch_opt/execution_bootstrap.py": "997bb4cd3a0a6cc607245a943a37dca5ef0a135469f0a34f94975d90e769e0e5",
+    "tools/bones_soma_batch_opt/qp_assembly.py": "fbc2aa98b7581748494f12e2969cf1a8ac685173009d5f3a6432dd5eb44786e3",
+    "motion_retargeting/umr/contact.py": "374403d38b054e2d0eea2c120bb060497b3c870a1f5079a191b342c5444926a3",
+    "motion_retargeting/umr/contact_source.py": "75d61c011c640094d8e83f470bbf7c9b62effe153b17e58f962c7022b9943008",
+    "motion_retargeting/umr/contact_projection.py": "7c53a418acf0ce9a8a42cba97a99afeac6bb17a5a55f471466a1aaab92284239",
+    "motion_retargeting/umr/run_soma.py": "d7b92521a7af1d76a48417c3fc1a4637b1c76754b8058e9ca3ba04027d0ce601",
+    "motion_retargeting/umr/upstream/scripts/soma_source.py": "25425fde6b77a260acfed8c9d39d14298bc99b004aa62be9fc6c8487cc24e817",
+    "motion_retargeting/umr/upstream/scripts/smpl_surface_retarget_common.py": "6379537acc693a3e296c220d10b8eb4df4a02f86df6c14d6197c38926a376467",
+    "motion_retargeting/umr/upstream/scripts/retarget_smpl_to_humanoid_surface_vector_batch.py": "f17659a7f08e39fb1f3fe501e3b8c652db1718ff54d0834c86a6850fafc1a6af"
+  },
+  "clips": [
+    {
+      "member": "soma_uniform/bvh/230315/jump_ff_270_002__A274.bvh",
+      "source_sha256": "d34f5e6fef90815938bddd7def08027d8dddff0347287038aa35fbad38742512",
+      "frames": 94,
+      "baseline_seconds": 70.08811787585728,
+      "optimized_seconds": 59.58014122210443,
+      "speedup": 1.1763670988053039,
+      "accepted": true,
+      "quality_flags": [],
+      "all_comparison_checks_passed": true,
+      "comparison_check_count": 77,
+      "peak_tree_rss_GiB": [
+        5.313854217529297,
+        5.284126281738281
+      ]
+    },
+    {
+      "member": "soma_uniform/bvh/230315/just_realised_R_003__A275_M.bvh",
+      "source_sha256": "bf66220043bb37b3cc53f435bd337847fa94384558dd787ed6c732a4a4168709",
+      "frames": 112,
+      "baseline_seconds": 73.59052964998409,
+      "optimized_seconds": 61.57880826294422,
+      "speedup": 1.1950625828247485,
+      "accepted": true,
+      "quality_flags": [],
+      "all_comparison_checks_passed": true,
+      "comparison_check_count": 77,
+      "peak_tree_rss_GiB": [
+        5.315879821777344,
+        5.354099273681641
+      ]
+    },
+    {
+      "member": "soma_uniform/bvh/230315/jog_ff_stop_180_R_003__A273.bvh",
+      "source_sha256": "923a88cd78dd2b30a001769c84f2d4de1a5009b0a989382af093cb8718b16f7a",
+      "frames": 136,
+      "baseline_seconds": 85.10598335997202,
+      "optimized_seconds": 73.09525100584142,
+      "speedup": 1.1643161790794145,
+      "accepted": false,
+      "quality_flags": [
+        "large_root_correction"
+      ],
+      "all_comparison_checks_passed": true,
+      "comparison_check_count": 76,
+      "peak_tree_rss_GiB": [
+        5.305782318115234,
+        5.354106903076172
+      ]
+    },
+    {
+      "member": "soma_uniform/bvh/230315/reach_jump_R_002__A274_M.bvh",
+      "source_sha256": "45f7ffbe58bf21a4f97cc3e944b579fb15a5e2a6fe88ebd8e68eff9b4096ea8e",
+      "frames": 454,
+      "baseline_seconds": 205.75880651804619,
+      "optimized_seconds": 193.75421106698923,
+      "speedup": 1.0619578557025862,
+      "accepted": true,
+      "quality_flags": [],
+      "all_comparison_checks_passed": true,
+      "comparison_check_count": 77,
+      "peak_tree_rss_GiB": [
+        5.436328887939453,
+        5.419162750244141
+      ]
+    }
+  ]
+}

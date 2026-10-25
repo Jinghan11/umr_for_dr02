@@ -28,6 +28,40 @@ Repository: [Jinghan11/umr_for_dr02](https://github.com/Jinghan11/umr_for_dr02).
 
 The code runs from this directory after installing dependencies and providing a licensed body model. It does not require the author's original project, datasets, Conda environments, cache, credentials, GPU numbering, or background services.
 
+## Large-dataset execution speed optimization — 2026-10-26
+
+This update reduces repeated work in **large-scale BONES-SEED SOMA retargeting**.
+It is an opt-in batch execution layer in [tools/bones_soma_batch_opt](tools/bones_soma_batch_opt/README.md),
+validated against the existing 29DOF `roll2` production configuration. It reuses the
+loaded SOMA model and the same action's template when computing the original contact
+sole points, caches QP sparse-matrix structure, and evaluates only the position
+kinematics needed inside contact projection. Each QP still constructs a fresh
+Clarabel solver. Native and contact surface generation keep their respective batch
+sizes and finger policies; native finger-zeroed vertices are not substituted for contact data.
+
+Four complete clips, including a mirrored clip and a contact-rejected clip, covered
+796 frames per configuration. Their summed wall time decreased from **434.5 s to
+388.0 s (10.7% less time; 1.12× throughput)**. All compared native/final trajectory
+arrays, contact diagnostic arrays, numerical quality metrics and acceptance flags
+were exactly equal. Fourteen fault-injection checks passed. These are paired clip
+measurements with at most two test workers and varying production background load,
+not a full-dataset throughput guarantee or a comparison with unadapted upstream UMR.
+See the [measurement record](tools/bones_soma_batch_opt/benchmark_20261026.json).
+
+| Date (UTC+8) | Milestone |
+| --- | --- |
+| 2026-10-22 | Published the 50 Hz, original-SOMA input path with contact refinement enabled by default. |
+| 2026-10-26 | Recorded the existing 29DOF production dependencies: welded neck, zero head targets, bounded weighted LQR and model-dependent trajectory dimensions. |
+| 2026-10-26 | Profiled QP/source/contact work; validated the execution layer on four full clips and failure cases; integrated it with the guarded production scheduler. |
+
+The 29DOF dependency changes establish the comparison baseline; their effects are
+not counted as speed gains. Use `--input-type soma --revision29 roll2` to select
+that model (36 qpos / 35 qvel / 29 actuators); omitting `--revision29` retains the
+default 31DOF model. The speed layer requires explicit, hash-bound execution and
+identity-memo manifests plus per-attempt audit integration. A normal CLI invocation
+does not silently enable it. Full motions, the 50 Hz clock, solver settings, contact
+acceptance and retained native/final outputs remain part of the production contract.
+
 ## What is included
 
 - Pinned, adapted UMR source: `d1cdaedaf67a827198da71c5fa831f48b2e51f91`.
@@ -60,7 +94,7 @@ This project retains UMR's PointNet encoder, template residual decoder, correspo
 
 These are **robot adaptation, solver-quality settings, memory controls and engineering changes**. No controlled accuracy/speed ablation against upstream is supplied. The settings do not establish that this project is faster, more accurate or dynamically more stable than upstream. A reduced-sample one-epoch smoke run establishes execution only.
 
-The original local source modifications are recorded in `motion_retargeting/umr/upstream_adaptation.patch`: SMPL input/template hooks and semantic parts, writing derived floating XML into run outputs, and QP-status/frame-cost diagnostics. The retained upstream files match that **adapted snapshot**, not an unmodified official checkout; `VENDOR_MANIFEST.json` validates the adapted bytes. Public packaging leaves that solver snapshot unchanged. DR02/HiPHI settings are generated outside it by `run_hiphi.py` (`robot_config`, `solver_config`, `solver_scene`, `create_configs`). Local BVH preprocessing is in `curated/{shape,input_skeleton,convert}.py`; prepared SMPL support is in `smpl_surface_adapter.py`; read-only quality checks are in `curated/{validate,foot_slip}.py`.
+The original local source modifications are recorded in `motion_retargeting/umr/upstream_adaptation.patch`: SMPL input/template hooks and semantic parts, writing derived floating XML into run outputs, and QP-status/frame-cost diagnostics. The retained upstream files match that **adapted snapshot**, not an unmodified official checkout; `VENDOR_MANIFEST.json` validates the adapted bytes. The 2026-10-26 dependency update also records the existing 29DOF hooks, target diagnostics and bounded weighted LQR in that patch and manifest. The optional execution speed layer is versioned separately under `tools/bones_soma_batch_opt`. DR02/HiPHI settings are generated outside it by `run_hiphi.py` (`robot_config`, `solver_config`, `solver_scene`, `create_configs`). Local BVH preprocessing is in `curated/{shape,input_skeleton,convert}.py`; prepared SMPL support is in `smpl_surface_adapter.py`; read-only quality checks are in `curated/{validate,foot_slip}.py`.
 
 ## Installation
 

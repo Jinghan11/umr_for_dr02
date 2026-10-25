@@ -44,6 +44,7 @@ def main():
     retarget.add_argument('--ground-mode', choices=['mujoco_collision','surface_slots_all'], default='mujoco_collision')
     retarget.add_argument('--contact-refine', action=argparse.BooleanOptionalAction, default=True,
                           help='Preserve source-informed foot contact after UMR/LQR (default: on)')
+    retarget.add_argument('--revision29', choices=['baseline','roll2'])
     retarget.add_argument('--input-type', choices=['smplx','smpl_surface','soma'], default='smplx')
     retarget.add_argument('--output', type=Path, help='Output root for prepared SMPL surface or SOMA BVH inputs')
     retarget.add_argument('--template', type=Path, help='Canonical template declared by prepared SMPL surfaces')
@@ -92,6 +93,9 @@ def main():
                        '--epochs', args.epochs, '--max-frames', args.max_frames, '--tag', args.tag,
                        '--ground-mode', args.ground_mode,
                        '--contact-refine' if args.contact_refine else '--no-contact-refine']
+            if args.revision29:
+                if args.input_type != 'soma': parser.error('--revision29 requires SOMA')
+                options += ['--revision29', args.revision29]
             if args.output: options += ['--output', args.output.resolve()]
             if args.template:
                 if args.input_type == 'soma': parser.error('SOMA uses its dataset MHR shape, not --template')

@@ -18,6 +18,7 @@ from motion_retargeting.umr.curated.validate import _bottom
 
 @dataclass(frozen=True)
 class ContactProjectionConfig:
+    revision29_multiplier: float = 0.
     clearance: float = .001
     max_iterations: int = 60
     contact_xy_weight: float = 120.
@@ -55,7 +56,7 @@ def _weighted_median(values, weights):
 
 
 def _geometry(model):
-    if model.nq != 38 or model.nv != 37 or int(model.jnt_type[0]) != int(mujoco.mjtJoint.mjJNT_FREE):
+    if (model.nq,model.nv) not in ((38,37),(36,35)) or int(model.jnt_type[0]) != int(mujoco.mjtJoint.mjJNT_FREE):
         raise ValueError("Contact projection requires the free-base DR02 qpos38 model")
     bodies = [model.body(f"{side}_ankle_x_link").id for side in ("left", "right")]
     feet = []
@@ -267,10 +268,20 @@ def project_contacts(model, qpos, fps, support_mask, *, config=None, confidence=
     dt_scale = float(fps) / 50.
     velocity_scale = cfg.velocity_weight * dt_scale * np.r_[np.ones(3), np.full(width - 3, .12)]
     acceleration_scale = cfg.acceleration_weight * dt_scale**2 * np.r_[np.ones(3), np.full(width - 3, .12)]
+    neutral_scale=np.zeros(width)
+    if cfg.revision29_multiplier:
+        from .revision29 import weights, NEUTRAL_COST
+        scale=np.sqrt(weights(model,addresses,cfg.revision29_multiplier))
+        pose_scale *= scale
+        velocity_scale *= scale
+        acceleration_scale *= scale
+        neutral_scale[3:]=np.sqrt(NEUTRAL_COST)*scale[3:]
     rows_per_frame = width + 6 + 12 + 2 + len(collisions)
     frame_rows = frames * rows_per_frame
     velocity_rows = max(0, frames - 1) * width
     total_rows = frame_rows + velocity_rows + max(0, frames - 2) * width
+    neutral_start=total_rows
+    if cfg.revision29_multiplier: total_rows += frames*width
     data = mujoco.MjData(model)
     jacp, jacr = np.empty((3, model.nv)), np.empty((3, model.nv))
     cached_x = cached_residual = cached_jacobian = None
@@ -280,6 +291,7 @@ def project_contacts(model, qpos, fps, support_mask, *, config=None, confidence=
         if cached_x is not None and np.array_equal(flat, cached_x):
             return cached_residual, cached_jacobian
         change = flat.reshape(frames, width)
+        motion=change+aligned[:,addresses] if cfg.revision29_multiplier else change
         residual = np.zeros(total_rows)
         row_indices, column_indices, coefficients = [], [], []
 
@@ -349,14 +361,19 @@ def project_contacts(model, qpos, fps, support_mask, *, config=None, confidence=
                     block(row + index, col, cfg.collision_weight * jacp[2, dofs])
         for t in range(1, frames):
             row = frame_rows + (t - 1) * width
-            residual[row:row + width] = velocity_scale * (change[t] - change[t - 1])
+            residual[row:row + width] = velocity_scale * (motion[t] - motion[t - 1])
             block(row, (t - 1) * width, -np.diag(velocity_scale))
             block(row, t * width, np.diag(velocity_scale))
         for t in range(2, frames):
             row = frame_rows + velocity_rows + (t - 2) * width
-            residual[row:row + width] = acceleration_scale * (change[t] - 2 * change[t - 1] + change[t - 2])
+            residual[row:row + width] = acceleration_scale * (motion[t] - 2 * motion[t - 1] + motion[t - 2])
             for previous, factor in ((t - 2, 1.), (t - 1, -2.), (t, 1.)):
                 block(row, previous * width, factor * np.diag(acceleration_scale))
+        if cfg.revision29_multiplier:
+            for t in range(frames):
+                rr=neutral_start+t*width
+                residual[rr:rr+width]=neutral_scale*motion[t]
+                block(rr,t*width,np.diag(neutral_scale))
         jacobian = coo_matrix((coefficients, (row_indices, column_indices)),
                               shape=(total_rows, frames * width)).tocsr()
         cached_x, cached_residual, cached_jacobian = flat.copy(), residual, jacobian
@@ -390,7 +407,11 @@ def project_contacts(model, qpos, fps, support_mask, *, config=None, confidence=
                 source_gap_targets=source_gap_targets[t] if source_heights is not None else None,
                 source_height_weight=cfg.source_height_weight, swing_weight=cfg.swing_weight,
                 source_height_tolerance=.9 * cfg.source_airborne_height_tolerance_m,
-                max_iterations=cfg.restoration_max_iterations)
+                max_iterations=cfg.restoration_max_iterations,
+                motion_neighbors=[candidate_before_restoration[j,addresses] for j in (t-1,t+1) if 0<=j<frames],
+                motion_velocity_weight=cfg.velocity_weight*dt_scale,
+                motion_acceleration_weight=cfg.acceleration_weight*dt_scale**2,
+                revision29_multiplier=cfg.revision29_multiplier)
             record = dict(record, frame=int(t))
             restoration_records.append(record)
             corrected[t] = restored

@@ -6,13 +6,42 @@ GEAR-SONIC 预转换 SMPL 用于兼容或对照；其源姿态可能已有不连
 仅有 SMPL、SOMA 资源不可用或明确指定 SMPL 时，使用表面输入分支并记录来源及限制。
 目前这一选择有同名持续跛行样例的实测支持，未证明整个数据集均优于 SMPL。
 
+## 面向大规模数据集的速度优化 — 2026-10-26
+
+本次优化针对 **BONES-SEED SOMA 大规模批量重定向**中的重复计算。
+[批处理执行层](tools/bones_soma_batch_opt/README.md)在已有 29DOF `roll2` 生产配置上验证：
+利用原生阶段已加载的 SOMA 模型和同一动作的模板，计算原有接触足底数据；
+缓存 QP 稀疏矩阵结构；接触投影内部只计算所需的位置运动学。
+每次 QP 仍新建 Clarabel 求解器。原生与接触阶段各自保留原有 batch 大小和手指策略，
+接触数据不会改用手指归零的原生表面顶点。
+
+四个完整动作（含镜像动作和接触拒绝动作），每组共 796 帧，合计耗时由
+**434.5 秒降至 388.0 秒，减少 10.7%，对应吞吐约 1.12 倍**。
+比较的原生/最终轨迹数组、接触诊断数组、数值质量指标和验收标志完全一致；
+14 项故障注入检查通过。测试最多同时运行两个测试任务，后台生产负载会变化，
+因此该结果是四个动作的配对测量，不能直接作为全数据集吞吐保证或相对未适配上游 UMR 的加速比。
+详见[测量记录](tools/bones_soma_batch_opt/benchmark_20261026.json)。
+
+| 时间（UTC+8） | 里程碑 |
+| --- | --- |
+| 2026-10-22 | 发布 50 Hz 原始 SOMA 输入流程，默认开启接触修正。 |
+| 2026-10-26 | 将已有生产任务必需的 29DOF 依赖纳入版本：焊接颈部、关闭头部目标、有界加权 LQR，以及随模型变化的轨迹维度。 |
+| 2026-10-26 | 分析 QP、源表面和接触阶段耗时；完成四个完整动作与故障测试；接入受资源和结果检查约束的生产调度。 |
+
+29DOF 改动属于本次测量的既有基线，不计入速度收益。
+使用 `--input-type soma --revision29 roll2` 选择该模型（qpos 36 / qvel 35 / 29 个执行器），
+不指定 `--revision29` 时仍使用默认 31DOF 模型。
+速度执行层需要显式提供绑定源码哈希的执行清单、identity memo 清单和逐次任务审计，
+普通 CLI 调用不会自动开启。生产流程继续处理完整动作，保留 50 Hz 时钟、求解参数、
+接触验收，以及原生/最终轨迹和报告。
+
 ## 默认接触修正与 BONES 输入
 
 `umr.py retarget` 在原生 UMR/LQR 后**默认启用接触修正**，从人体足底表面判断支撑，
 再修正 DR02 的实际脚底碰撞几何。`trajectory.npz` 是修正后参考，
 `native_trajectory.npz` 单独保留原生结果；`contact_report.json` 记录来源、误差、收敛状态与验收。
 需要原生结果时显式使用 `--no-contact-refine`。验收失败会报错，不能把失败结果当作完成。
-修正后的 `qvel[T,37]` 与 50 Hz `qpos` 按相同 MuJoCo 规则重新计算。
+默认 31DOF 模型修正后的 `qvel[T,37]` 与 50 Hz `qpos` 按相同 MuJoCo 规则重新计算。
 
 默认 SMPL-X 输入仍使用 `retarget --data DIR`。BONES 可选两条独立的真实输入分支：
 
@@ -68,9 +97,9 @@ SOMA 形状可以是 uniform 或 proportional，以实际输入路径及匹配�
 | SMPL 表面分支 | 固定官方源未包含本项目的估计表面 NPZ 接口 | 增加 vertices/joints/template loader，用原生 SMPL LBS 权重映射语义表面分区 | 支持已经准备好的真实维度 SMPL 表面；不把 SMPL72 伪装成 SMPL-X |
 | 质量检查 / 可移植性 | 原生输出及可视化 | 补充帧映射、有限值、四元数、限位、真实碰撞体地面与足滑代理检查；参数缓存、锁、公开 CLI 和模型路径发现 | 结果可追溯、可独立复跑；检查不修复轨迹，不自动抬根、裁剪关节或插补失败帧 |
 
-这些属于**机器人适配、求解质量设置、内存规模控制和工程化**。目前没有同数据、同硬件的严格消融或速度基准，不能据此声称比原版 UMR 更准、更快或更稳定。低点数 / 单 epoch 的 smoke 结果只证明代码链路能执行。
+这些属于**机器人适配、求解质量设置、内存规模控制和工程化**。目前没有相对未适配上游 UMR 的同数据、同硬件严格消融或速度基准，不能据此声称比原版 UMR 更准、更快或更稳定。上方 2026-10-26 的速度测量以已有本地生产配置为基线。低点数 / 单 epoch 的 smoke 结果只证明代码链路能执行。
 
-原本地源码修改逐项保存在 `motion_retargeting/umr/upstream_adaptation.patch`：SMPL 输入与模板分支、SMPL 语义分区接入、派生 floating XML 写入运行输出目录、QP 状态与逐帧代价记录。公开版保留的上游文件与这份**已适配快照**逐字节一致，`VENDOR_MANIFEST.json` 校验的是该快照，而不是声称整个目录等同于未修改的官方 commit。DR02/HiPHI 参数配置与公开入口在上游源码之外。
+原本地源码修改逐项保存在 `motion_retargeting/umr/upstream_adaptation.patch`：SMPL 输入与模板分支、SMPL 语义分区接入、派生 floating XML 写入运行输出目录、QP 状态与逐帧代价记录。公开版保留的上游文件与这份**已适配快照**逐字节一致，`VENDOR_MANIFEST.json` 校验的是该快照，而不是声称整个目录等同于未修改的官方 commit。2026-10-26 的依赖更新在该补丁与清单中补充了既有 29DOF 接入、目标诊断与有界加权 LQR。可选速度执行层另存于 `tools/bones_soma_batch_opt`。DR02/HiPHI 参数配置与公开入口在上游源码之外。
 
 代码对应：`run_hiphi.py::robot_config/solver_config/solver_scene/create_configs` 实现目标模型与求解配置；`curated/shape.py`、`input_skeleton.py`、`convert.py` 处理 BVH；`smpl_surface_adapter.py` 处理 SMPL 估计表面；`curated/validate.py` 与 `foot_slip.py` 负责只读质量检查。
 

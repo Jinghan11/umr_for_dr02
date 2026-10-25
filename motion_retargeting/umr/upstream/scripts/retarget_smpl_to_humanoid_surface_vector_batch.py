@@ -359,6 +359,7 @@ def fill_args_from_config(args):
     corr = section(config, "correspondence")
     retarget = section(config, "retarget")
     solver = section(config, "solver")
+    args.revision29 = solver.get("revision29")
 
     set_default(args, "data", resolve_path(motion.get("data"), config, DEFAULT_DATA))
     set_default(args, "seq_key", motion.get("seq_key", "0-cmu_13_18_poses"))
@@ -1005,8 +1006,13 @@ def solve_frame_body_segment_qp(
 ):
     qpos = qpos_init.copy()
     costs = []
-    sqrt_smooth = np.sqrt(float(args.smooth_cost))
-    sqrt_temporal_smooth = np.sqrt(float(args.temporal_smooth_cost))
+    revision = getattr(args,"revision29",None)
+    joint_weights = np.ones(len(joint_qpos_addrs))
+    if revision:
+        from motion_retargeting.umr.revision29 import weights
+        joint_weights = np.sqrt(weights(model,joint_qpos_addrs,revision["roll_multiplier"]))
+    sqrt_smooth = np.sqrt(float(args.smooth_cost)) * joint_weights
+    sqrt_temporal_smooth = np.sqrt(float(args.temporal_smooth_cost)) * joint_weights
     ground_contact_threshold = float(args.ground_contact_map_threshold)
     ground_contact_max_points = int(args.ground_contact_map_max_points)
     self_contact_cost = float(args.self_contact_map_cost)
@@ -1277,12 +1283,17 @@ def solve_frame_body_segment_qp(
                         rows.append(row_costs[row] * jac)
                         residuals.append(row_costs[row] * (current_vectors[row] - target_vectors[int(slot_id)]))
 
+        if revision and smooth_jac is not None:
+            neutral_scale=np.sqrt(revision["neutral_cost"])*joint_weights
+            rows.append(neutral_scale[:,None]*smooth_jac)
+            residuals.append(neutral_scale*qpos[joint_qpos_addrs])
+
         if qpos_prev is not None and float(args.smooth_cost) > 0.0 and smooth_jac is not None:
-            rows.append(sqrt_smooth * smooth_jac)
+            rows.append(sqrt_smooth[:,None] * smooth_jac)
             residuals.append(sqrt_smooth * (qpos[joint_qpos_addrs] - qpos_prev[joint_qpos_addrs]))
 
         if qpos_prev is not None and qpos_prev2 is not None and float(args.temporal_smooth_cost) > 0.0 and smooth_jac is not None:
-            rows.append(sqrt_temporal_smooth * smooth_jac)
+            rows.append(sqrt_temporal_smooth[:,None] * smooth_jac)
             current_dq = qpos[joint_qpos_addrs] - qpos_prev[joint_qpos_addrs]
             previous_dq = qpos_prev[joint_qpos_addrs] - qpos_prev2[joint_qpos_addrs]
             residuals.append(sqrt_temporal_smooth * (current_dq - previous_dq))
@@ -1961,6 +1972,10 @@ def main(argv=None):
         args.seed,
         log_prefix="HumanoidRetarget",
     )
+    if getattr(args,"revision29",None):
+        from motion_retargeting.umr.revision29 import assert_head_targets_removed
+        assert_head_targets_removed(source_slot_part_ids,selected_slot_ids,SMPLX_PART_IDS['head'])
+
     if bool(args.ground_penetration_hard_constraint):
         ground_candidate_slots = len(robot_slots) if str(args.ground_penetration_hard_constraint_mode) == "surface_slots_all" else len(selected_slot_ids)
         print(
@@ -2114,6 +2129,14 @@ def main(argv=None):
     else:
         raise ValueError(f"Unknown --surface-normal-cost-mode {surface_normal_cost_mode!r}")
     joint_qpos_addrs, joint_dof_addrs, _joint_ranges, joint_names = common.scalar_qpos_joint_addrs(model)
+    if getattr(args,"revision29",None):
+        Path(args.out).parent.mkdir(parents=True,exist_ok=True)
+        Path(args.out).with_suffix('.targets.json').write_text(json.dumps({
+            'controlled_dof':model.nu, 'head_target_count':0,
+            'selected_slot_ids':np.asarray(selected_slot_ids).tolist(),
+            'selected_part_ids':np.asarray(source_slot_part_ids)[selected_slot_ids].tolist(),
+            'joint_names':[model.joint(j).name for j in range(model.njnt) if model.jnt_qposadr[j]>=7]
+        },indent=2))
     print(f"[HumanoidRetarget] scalar_joints={len(joint_names)} robot_xml={robot_xml}")
 
     mujoco.mj_resetData(model, data_mj)
@@ -2168,12 +2191,16 @@ def main(argv=None):
         parent = np.zeros((n_frames, 2), dtype=np.int8)
         dp[0] = frame_costs[0]
         joint_addrs = np.asarray(joint_qpos_addrs, dtype=np.int32)
+        transition_weights=np.ones(len(joint_addrs))
+        if getattr(args,"revision29",None):
+            from motion_retargeting.umr.revision29 import weights
+            transition_weights=weights(model,joint_addrs,args.revision29["roll_multiplier"])
         for frame_idx in range(1, n_frames):
             for state in range(2):
                 transition_scores = np.empty(2, dtype=np.float64)
                 for prev_state in range(2):
                     dq = q_candidates[frame_idx, state, joint_addrs] - q_candidates[frame_idx - 1, prev_state, joint_addrs]
-                    transition = continuity_cost * float(np.dot(dq, dq))
+                    transition = continuity_cost * float(np.dot(transition_weights*dq, dq))
                     if state != prev_state:
                         transition += switch_cost
                     transition_scores[prev_state] = dp[frame_idx - 1, prev_state] + transition
@@ -2447,7 +2474,13 @@ def main(argv=None):
     if str(args.trajectory_filter_mode).lower() == "lqr":
         unfiltered_qpos_seq = qpos_seq.copy()
         raw_summary = common.qpos_temporal_summary(unfiltered_qpos_seq, joint_qpos_addrs)
-        qpos_seq = common.lqr_smooth_qpos_sequence(
+        smoother=common.lqr_smooth_qpos_sequence
+        extra={}
+        if getattr(args,"revision29",None):
+            from motion_retargeting.umr.revision29 import smooth
+            smoother=smooth
+            extra={"multiplier":args.revision29["roll_multiplier"]}
+        qpos_seq = smoother(
             model,
             unfiltered_qpos_seq,
             joint_qpos_addrs,
@@ -2459,6 +2492,7 @@ def main(argv=None):
             include_root_translation=bool(args.trajectory_filter_root_translation),
             anchor_start_frames=int(args.trajectory_filter_anchor_start_frames),
             anchor_end_frames=int(args.trajectory_filter_anchor_end_frames),
+            **extra,
         ).astype(np.float32)
         filtered_summary = common.qpos_temporal_summary(qpos_seq, joint_qpos_addrs)
         print(
