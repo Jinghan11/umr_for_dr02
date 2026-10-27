@@ -38,6 +38,22 @@ def main():
     retarget.add_argument('--points', type=int, default=1024)
     retarget.add_argument('--epochs', type=int, default=500)
     retarget.add_argument('--device', choices=['cpu','cuda'], default='cpu')
+    retarget.add_argument('--backend', choices=['qp', 'torch'], default='qp',
+                          help='qp: established UMR; torch: experimental parallel SOMA trajectory optimizer')
+    retarget.add_argument('--pipeline', choices=['legacy', 'gpu-resident-v2'], default='legacy',
+                          help='Select the opt-in, quality-gated resident GPU experiment')
+    retarget.add_argument('--gpu-devices', default='0',
+                          help='Comma-separated physical GPU IDs for the resident pipeline (0 and 2 only)')
+    retarget.add_argument('--gpu-memory-limit-gib', type=float, default=8.,
+                          help='Per-GPU resident worker memory budget in GiB')
+    retarget.add_argument('--gpu-source-cache', type=Path,
+                          help='Content-addressed resident source cache, separate from production')
+    retarget.add_argument('--gpu-iterations', type=int, default=300)
+    retarget.add_argument('--gpu-learning-rate', type=float, default=.03)
+    retarget.add_argument('--gpu-batch-frames', type=int, default=256,
+                          help='Frames per Torch gradient microbatch; temporal edges remain connected')
+    retarget.add_argument('--gpu-batch-clips', type=int, default=4,
+                          help='Maximum SOMA clips prepared together for a shared Torch solve')
     retarget.add_argument('--max-frames', type=int, default=0)
     retarget.add_argument('--force', action='store_true')
     retarget.add_argument('--tag', default='dr02')
@@ -45,6 +61,10 @@ def main():
     retarget.add_argument('--contact-refine', action=argparse.BooleanOptionalAction, default=True,
                           help='Preserve source-informed foot contact after UMR/LQR (default: on)')
     retarget.add_argument('--revision29', choices=['baseline','roll2'])
+    retarget.add_argument('--reference-config', type=Path,
+                          help='Read-only CPU revision29 contract for experimental Torch comparisons')
+    retarget.add_argument('--source-python', type=Path,
+                          help='Python environment for CPU source features; optimizer keeps its current runtime')
     retarget.add_argument('--input-type', choices=['smplx','smpl_surface','soma'], default='smplx')
     retarget.add_argument('--output', type=Path, help='Output root for prepared SMPL surface or SOMA BVH inputs')
     retarget.add_argument('--template', type=Path, help='Canonical template declared by prepared SMPL surfaces')
@@ -86,6 +106,55 @@ def main():
         print(convert_sequence(source, args.output.resolve(), shape_record=shape, model_path=model,
                                target_fps=50.0, temp_root=work/'tmp'))
     elif args.command == 'retarget':
+        if args.pipeline == 'gpu-resident-v2':
+            if (args.input_type != 'soma' or args.backend != 'torch' or args.device != 'cuda'
+                    or args.revision29 != 'roll2' or not args.contact_refine):
+                parser.error('gpu-resident-v2 requires SOMA, torch, cuda, revision29 roll2 and contact refinement')
+            if args.max_frames or args.template or args.model:
+                parser.error('gpu-resident-v2 requires complete original SOMA motions and matching MHR assets')
+            if args.gpu_iterations != 300 or args.gpu_learning_rate != .03 or args.gpu_batch_frames != 256:
+                parser.error('legacy Adam iteration, learning rate and frame batching options are not supported by gpu-resident-v2')
+            if not args.output:
+                parser.error('gpu-resident-v2 requires an explicit isolated --output directory')
+            try:
+                devices = tuple(int(x) for x in args.gpu_devices.split(','))
+                from motion_retargeting.umr.gpu_resident_executor import ExecutorConfig
+                ExecutorConfig(devices=devices, memory_gib=args.gpu_memory_limit_gib,
+                               batch_clips=args.gpu_batch_clips).validate()
+            except (TypeError, ValueError) as exc:
+                parser.error(str(exc))
+            options = ['--data', *[p.resolve() for p in args.data], '--output', args.output.resolve(),
+                       '--gpu-devices', args.gpu_devices, '--gpu-memory-limit-gib', args.gpu_memory_limit_gib,
+                       '--batch-clips', args.gpu_batch_clips, '--batch-frames', args.gpu_batch_frames,
+                       '--points', args.points, '--epochs', args.epochs, '--tag', args.tag]
+            if args.reference_config: options += ['--reference-config', args.reference_config.resolve()]
+            if args.source_python: options += ['--source-python', args.source_python.absolute()]
+            if args.gpu_source_cache: options += ['--source-cache', args.gpu_source_cache.resolve()]
+            if args.force: options += ['--force']
+            execute(METHOD/'run_gpu_resident.py', options)
+            return
+        if args.gpu_devices != '0' or args.gpu_memory_limit_gib != 8. or args.gpu_source_cache:
+            parser.error('GPU device/memory/source-cache options require --pipeline gpu-resident-v2')
+        if args.backend == 'torch':
+            if args.input_type != 'soma':
+                parser.error('--backend torch currently requires --input-type soma')
+            if args.template:
+                parser.error('SOMA uses its dataset MHR shape, not --template')
+            options = ['--data', *[p.resolve() for p in args.data], '--points', args.points,
+                       '--epochs', args.epochs, '--max-frames', args.max_frames, '--tag', args.tag,
+                       '--device', args.device, '--iterations', args.gpu_iterations,
+                       '--learning-rate', args.gpu_learning_rate, '--batch-frames', args.gpu_batch_frames,
+                       '--batch-clips', args.gpu_batch_clips,
+                       '--contact-refine' if args.contact_refine else '--no-contact-refine']
+            if args.output: options += ['--output', args.output.resolve()]
+            if args.revision29: options += ['--revision29', args.revision29]
+            if args.reference_config: options += ['--reference-config', args.reference_config.resolve()]
+            if args.source_python: options += ['--source-python', args.source_python.absolute()]
+            if args.force: options += ['--force']
+            execute(METHOD/'run_gpu.py', options)
+            return
+        if args.reference_config or args.source_python:
+            parser.error('--reference-config/--source-python are only for --backend torch')
         if args.input_type in ('smpl_surface', 'soma'):
             if args.device != 'cpu':
                 parser.error('SMPL surface and SOMA runs currently require --device cpu')

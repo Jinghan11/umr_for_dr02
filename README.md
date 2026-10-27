@@ -24,6 +24,10 @@ it is never padded or converted into SMPL-X. See [contact details](motion_retarg
 
 Portable motion retargeting for the **Deep Robotics DR02 Pro** using the surface correspondence and constrained optimization pipeline from [UMR](https://github.com/hanyang9/UMR). This is a local robot/input adaptation, not an official UMR robot release. [中文说明](README.zh-CN.md).
 
+An opt-in GPU pipeline for original SOMA input and 29DOF `roll2` is under
+development. It is not yet validated for CUDA execution, quality, or speedup;
+see [GPU resident pipeline](GPU_RESIDENT_V2.md) for its current scope and limits.
+
 Repository: [Jinghan11/umr_for_dr02](https://github.com/Jinghan11/umr_for_dr02).
 
 The code runs from this directory after installing dependencies and providing a licensed body model. It does not require the author's original project, datasets, Conda environments, cache, credentials, GPU numbering, or background services.
