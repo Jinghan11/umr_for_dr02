@@ -1,5 +1,7 @@
 import unittest
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
+import threading
 from pathlib import Path
 import numpy as np
 import mujoco
@@ -44,6 +46,38 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(b.segment_sample_counts()['head'],0)
         self.assertEqual(b.segment_cost_values('point_cost')['head'],0.)
         b.configure_body_segment_surface()
+
+    def test_concurrent_model_publication_never_exposes_partial_content(self):
+        path = Path(self.tmp.name) / 'concurrent.xml'
+        versions = (b'a' * (256 * 1024), b'b' * (256 * 1024))
+        rev._publish_model(path, versions[0])
+        before = path.stat()
+        rev._publish_model(path, versions[0])
+        self.assertEqual((before.st_ino, before.st_mtime_ns),
+                         (path.stat().st_ino, path.stat().st_mtime_ns))
+        stop = threading.Event()
+        observed_bad = []
+        def reader():
+            while not stop.is_set():
+                value = path.read_bytes()
+                if value not in versions:
+                    observed_bad.append(len(value))
+                    stop.set()
+        def writer(index):
+            for iteration in range(40):
+                rev._publish_model(path, versions[(index + iteration) % 2])
+        with ThreadPoolExecutor(max_workers=9) as pool:
+            reader_result = pool.submit(reader)
+            try:
+                writers = [pool.submit(writer, index) for index in range(8)]
+                for result in writers:
+                    result.result()
+            finally:
+                stop.set()
+                reader_result.result()
+        self.assertEqual(observed_bad, [])
+        self.assertIn(path.read_bytes(), versions)
+        self.assertEqual(list(path.parent.glob('.concurrent.xml.*.tmp')), [])
 
 if __name__=='__main__':unittest.main()
 

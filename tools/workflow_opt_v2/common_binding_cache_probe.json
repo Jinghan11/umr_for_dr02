@@ -1,0 +1,31 @@
+{
+  "original_seconds": 0.20725073502399027,
+  "cold_seconds": 0.20817501610144973,
+  "warm1_seconds": 0.002025390975177288,
+  "warm2_seconds": 0.0012549699749797583,
+  "warm3_seconds": 0.0011476289946585894,
+  "exact_arrays": true,
+  "stats": {
+    "hits": 3,
+    "misses": 1,
+    "writes": 1,
+    "capacity_skips": 0,
+    "unsupported_skips": 0,
+    "kind": "common",
+    "cache_root": "/tmp/umr-real-common-binding-f_4lip7e"
+  },
+  "points": 1004,
+  "cache_bytes": 41592,
+  "signature": {
+    "source_sha256": "6379537acc693a3e296c220d10b8eb4df4a02f86df6c14d6197c38926a376467",
+    "cache_implementation_sha256": "560890ec75e3bad6ab2ac5c4246fb1c7db1f79cb4322eeedaf8a32b05b87fa46",
+    "versions": {
+      "numpy": "1.26.4",
+      "scipy": "1.17.1",
+      "trimesh": "5.1.1"
+    },
+    "python": "3.12.3",
+    "machine": "x86_64"
+  },
+  "input_description": "Every 18th SOMA SMPLX wrap vertex bound to the original SMPLX base mesh; direct common-function equivalence probe, not end-to-end timing."
+}

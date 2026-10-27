@@ -5,6 +5,8 @@ This module does not certify actuator effort or dynamic feasibility.
 from pathlib import Path
 import hashlib
 import math
+import os
+import tempfile
 import xml.etree.ElementTree as ET
 import numpy as np
 import mujoco
@@ -26,6 +28,26 @@ def weights(model, addresses, multiplier=2.):
     by_address = {int(model.jnt_qposadr[j]): model.joint(j).name for j in range(model.njnt)}
     return np.array([multiplier if by_address.get(int(a)) in ROLL else 1. for a in addresses])
 
+def _publish_model(path, content):
+    """Publish a complete model without exposing a partially written XML file."""
+    try:
+        if path.read_bytes() == content:
+            return
+    except FileNotFoundError:
+        pass
+    temp = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent, prefix='.' + path.name + '.',
+                                         suffix='.tmp', delete=False) as stream:
+            temp = Path(stream.name)
+            stream.write(content)
+            stream.flush()
+            os.fchmod(stream.fileno(), 0o644)
+        os.replace(temp, path)
+    finally:
+        if temp is not None:
+            temp.unlink(missing_ok=True)
+
 def build_model(original, directory):
     """Weld neck at q=0, retaining bodies, inertia, geometry and official limits."""
     original, directory = Path(original), Path(directory)
@@ -41,11 +63,11 @@ def build_model(original, directory):
             if (node.tag=='joint' and node.get('name') in NECK) or (parent.tag=='actuator' and node.get('joint') in NECK): parent.remove(node)
     root.set('model', VERSION)
     content=ET.tostring(root,encoding='utf-8'); directory.mkdir(parents=True,exist_ok=True)
-    path=directory/('robot_'+hashlib.sha256(content).hexdigest()[:16]+'.xml');path.write_bytes(content)
+    path=directory/('robot_'+hashlib.sha256(content).hexdigest()[:16]+'.xml');_publish_model(path,content)
     model=mujoco.MjModel.from_xml_path(str(path))
     if (model.nq,model.nv,model.nu)!=(36,35,29): raise ValueError('29DOF model dimensions incorrect')
     root.find('worldbody').insert(0,ET.Element('geom',name='revision29_ground',type='plane',size='0 0 .1',rgba='.8 .8 .8 1'))
-    content=ET.tostring(root,encoding='utf-8');scene=directory/('scene_'+hashlib.sha256(content).hexdigest()[:16]+'.xml');scene.write_bytes(content)
+    content=ET.tostring(root,encoding='utf-8');scene=directory/('scene_'+hashlib.sha256(content).hexdigest()[:16]+'.xml');_publish_model(scene,content)
     return path,scene
 
 def smooth(model, poses, columns, multiplier=2., data_cost=1., velocity_cost=0.,

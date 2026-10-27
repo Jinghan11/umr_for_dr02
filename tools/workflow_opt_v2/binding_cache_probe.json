@@ -1,0 +1,19 @@
+{
+  "original_seconds": 3.231829232070595,
+  "cold_seconds": 3.775323617970571,
+  "warm1_seconds": 0.003922003088518977,
+  "warm2_seconds": 0.002612391021102667,
+  "warm3_seconds": 0.0022429251112043858,
+  "exact_arrays": true,
+  "stats": {
+    "hits": 3,
+    "misses": 1,
+    "writes": 1,
+    "capacity_skips": 0,
+    "unsupported_skips": 0,
+    "kind": "body",
+    "cache_root": "/tmp/umr-real-binding-cache-1l8zpv7u"
+  },
+  "points": 18056,
+  "cache_bytes": 302946
+}

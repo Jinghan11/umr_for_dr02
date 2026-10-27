@@ -1,0 +1,158 @@
+{
+  "scope": "contact projection replay, not end-to-end throughput",
+  "complete_original_soma_clips": true,
+  "fps": 50.0,
+  "repetitions": 3,
+  "floating_point_operation_order_changed": false,
+  "coo_insertion_order_changed": true,
+  "csr_data_bitwise_equivalence_tested": true,
+  "production_files_or_ledgers_modified": false,
+  "projection_source_sha256": "7c53a418acf0ce9a8a42cba97a99afeac6bb17a5a55f471466a1aaab92284239",
+  "optimization_source_sha256": "55dcddcd498be9216ed0e4d529bad54880a5c717fcc9ee36badb8d027c55dff1",
+  "benchmark_source_sha256": "2ddd5be02a7a756146809e8abe279d5e8623b31195b1e4c42fb1ba436e6ec55b",
+  "cases": [
+    {
+      "name": "jump",
+      "motion": "jump_ff_270_002__A274",
+      "frames": 94,
+      "native_path": "/tmp/bones_execution_opt_20261026/jump_optimized_repo/outputs/jump_ff_270_002__A274/native_trajectory.npz",
+      "native_sha256": "63443c2468783f7c5820128fe4d664fe4d34bb324ec9da713dc402ddbfe44794",
+      "diagnostic_path": "/tmp/bones_execution_opt_20261026/jump_optimized_repo/outputs/jump_ff_270_002__A274/contact_diagnostics.npz",
+      "diagnostic_sha256": "4e32b24bc51723224ff0bb4c7394420999a480b13ee5ba5289e2af8ee52e8cd4",
+      "model_path": "/data/ljh/sonic_for_cr1/umr_for_dr02/artifacts/soma_29dof_roll_v1/models/robot_50a8788226239d0e.xml",
+      "model_sha256": "50a8788226239d0e5b0c62eab4c2025c37184746d1811316b63b6dea8613a13f",
+      "timings": {
+        "v1_position_only": [
+          2.144986500032246,
+          2.164960964815691,
+          2.2130026898812503
+        ],
+        "v2_static_assembly": [
+          1.8384094689972699,
+          1.8146561670582741,
+          1.8160145150031894
+        ]
+      },
+      "exact_all_output_arrays": true,
+      "exact_diagnostics": true,
+      "saved_v1_output_exact": true,
+      "accepted": true,
+      "quality_flags": [],
+      "optimizer_evaluations": 31,
+      "median_seconds": {
+        "v1_position_only": 2.164960964815691,
+        "v2_static_assembly": 1.8160145150031894
+      },
+      "speedup": 1.192149592929817
+    },
+    {
+      "name": "mirror",
+      "motion": "just_realised_R_003__A275_M",
+      "frames": 112,
+      "native_path": "/tmp/bones_execution_opt_20261026/mirror_optimized_repo/outputs/just_realised_R_003__A275_M/native_trajectory.npz",
+      "native_sha256": "5c0b40228859371f31344d184a9ed82a4e521f1c6bafe9c0e88c9b766a0f03c2",
+      "diagnostic_path": "/tmp/bones_execution_opt_20261026/mirror_optimized_repo/outputs/just_realised_R_003__A275_M/contact_diagnostics.npz",
+      "diagnostic_sha256": "17861f785ac3a0d7c41fd3dcfdeacd1132f770745866ad0d29b32de668490a36",
+      "model_path": "/data/ljh/sonic_for_cr1/umr_for_dr02/artifacts/soma_29dof_roll_v1/models/robot_50a8788226239d0e.xml",
+      "model_sha256": "50a8788226239d0e5b0c62eab4c2025c37184746d1811316b63b6dea8613a13f",
+      "timings": {
+        "v1_position_only": [
+          2.0218918181490153,
+          2.129576632985845,
+          2.2236122940666974
+        ],
+        "v2_static_assembly": [
+          1.750303094042465,
+          1.740313097834587,
+          1.7960356490220875
+        ]
+      },
+      "exact_all_output_arrays": true,
+      "exact_diagnostics": true,
+      "saved_v1_output_exact": true,
+      "accepted": true,
+      "quality_flags": [],
+      "optimizer_evaluations": 24,
+      "median_seconds": {
+        "v1_position_only": 2.129576632985845,
+        "v2_static_assembly": 1.750303094042465
+      },
+      "speedup": 1.2166902065329825
+    },
+    {
+      "name": "reject",
+      "motion": "jog_ff_stop_180_R_003__A273",
+      "frames": 136,
+      "native_path": "/tmp/bones_execution_opt_20261026/reject_optimized_repo/outputs/jog_ff_stop_180_R_003__A273/native_trajectory.npz",
+      "native_sha256": "fb8bfef4fafe834619ac4fbf3c865d7f8d23f6c256d081ed1c7d48216844bcbe",
+      "diagnostic_path": "/tmp/bones_execution_opt_20261026/reject_optimized_repo/outputs/jog_ff_stop_180_R_003__A273/contact_diagnostics.npz",
+      "diagnostic_sha256": "c34c41d99d39586c06e5affc5fd3fd9321f465d3125aaa3a0f312896e570d3e8",
+      "model_path": "/data/ljh/sonic_for_cr1/umr_for_dr02/artifacts/soma_29dof_roll_v1/models/robot_50a8788226239d0e.xml",
+      "model_sha256": "50a8788226239d0e5b0c62eab4c2025c37184746d1811316b63b6dea8613a13f",
+      "timings": {
+        "v1_position_only": [
+          4.472298003034666,
+          4.334394654026255,
+          4.360067747998983
+        ],
+        "v2_static_assembly": [
+          3.7972597570624202,
+          3.787389328936115,
+          3.6829285509884357
+        ]
+      },
+      "exact_all_output_arrays": true,
+      "exact_diagnostics": true,
+      "saved_v1_output_exact": true,
+      "accepted": false,
+      "quality_flags": [
+        "large_root_correction"
+      ],
+      "optimizer_evaluations": 45,
+      "median_seconds": {
+        "v1_position_only": 4.360067747998983,
+        "v2_static_assembly": 3.787389328936115
+      },
+      "speedup": 1.1512066411254673
+    },
+    {
+      "name": "long",
+      "motion": "reach_jump_R_002__A274_M",
+      "frames": 454,
+      "native_path": "/tmp/bones_execution_opt_20261026/long_optimized_repo/outputs/reach_jump_R_002__A274_M/native_trajectory.npz",
+      "native_sha256": "a7e826cb4dfbedb26feda0d40a487575695722e0abfa4c62586e79582c04096a",
+      "diagnostic_path": "/tmp/bones_execution_opt_20261026/long_optimized_repo/outputs/reach_jump_R_002__A274_M/contact_diagnostics.npz",
+      "diagnostic_sha256": "960ec85c2eb263572d2d77ddab5ce0a7aae1b387f042d8c45027bcc7d4326e22",
+      "model_path": "/data/ljh/sonic_for_cr1/umr_for_dr02/artifacts/soma_29dof_roll_v1/models/robot_50a8788226239d0e.xml",
+      "model_sha256": "50a8788226239d0e5b0c62eab4c2025c37184746d1811316b63b6dea8613a13f",
+      "timings": {
+        "v1_position_only": [
+          14.21393101895228,
+          14.776950265048072,
+          15.030328406952322
+        ],
+        "v2_static_assembly": [
+          11.75794437294826,
+          11.96724556107074,
+          11.969108969904482
+        ]
+      },
+      "exact_all_output_arrays": true,
+      "exact_diagnostics": true,
+      "saved_v1_output_exact": true,
+      "accepted": true,
+      "quality_flags": [],
+      "optimizer_evaluations": 43,
+      "median_seconds": {
+        "v1_position_only": 14.776950265048072,
+        "v2_static_assembly": 11.96724556107074
+      },
+      "speedup": 1.2347829071977312
+    }
+  ],
+  "total_median_seconds": {
+    "v1_position_only": 23.43155561084859,
+    "v2_static_assembly": 19.32095249905251
+  },
+  "total_speedup": 1.2127536472126652
+}

@@ -1,0 +1,60 @@
+{
+  "date": "2026-10-26T14:00:35.491379+08:00",
+  "baseline": "current v1 optimization + identity memo enabled in both arms",
+  "full_motion_count": 4,
+  "full_frames_per_arm": 796,
+  "baseline_total_seconds": 386.48497205483727,
+  "candidate_total_seconds": 369.4603514848277,
+  "paired_speedup": 1.0460796957010114,
+  "wall_reduction_fraction": 0.0440498901664772,
+  "exact_native_final_and_diagnostics": true,
+  "measurement_scope": "four complete paired clips, at most two test workers, changing production load; first candidate binding cache cold, subsequent clips warm; not corpus-wide throughput",
+  "clips": [
+    {
+      "member": "soma_uniform/bvh/230315/jump_ff_270_002__A274.bvh",
+      "source_sha256": "d34f5e6fef90815938bddd7def08027d8dddff0347287038aa35fbad38742512",
+      "frames": 94,
+      "baseline_seconds": 67.08532901806757,
+      "candidate_seconds": 65.0821109500248,
+      "accepted": true,
+      "quality_flags": [],
+      "comparison_check_count": 77,
+      "all_exact": true
+    },
+    {
+      "member": "soma_uniform/bvh/230315/just_realised_R_003__A275_M.bvh",
+      "source_sha256": "bf66220043bb37b3cc53f435bd337847fa94384558dd787ed6c732a4a4168709",
+      "frames": 112,
+      "baseline_seconds": 66.58734672190621,
+      "candidate_seconds": 65.59457955998369,
+      "accepted": true,
+      "quality_flags": [],
+      "comparison_check_count": 77,
+      "all_exact": true
+    },
+    {
+      "member": "soma_uniform/bvh/230315/jog_ff_stop_180_R_003__A273.bvh",
+      "source_sha256": "923a88cd78dd2b30a001769c84f2d4de1a5009b0a989382af093cb8718b16f7a",
+      "frames": 136,
+      "baseline_seconds": 72.60143325384706,
+      "candidate_seconds": 67.5883838199079,
+      "accepted": false,
+      "quality_flags": [
+        "large_root_correction"
+      ],
+      "comparison_check_count": 76,
+      "all_exact": true
+    },
+    {
+      "member": "soma_uniform/bvh/230315/reach_jump_R_002__A274_M.bvh",
+      "source_sha256": "45f7ffbe58bf21a4f97cc3e944b579fb15a5e2a6fe88ebd8e68eff9b4096ea8e",
+      "frames": 454,
+      "baseline_seconds": 180.21086306101643,
+      "candidate_seconds": 171.1952771549113,
+      "accepted": true,
+      "quality_flags": [],
+      "comparison_check_count": 77,
+      "all_exact": true
+    }
+  ]
+}
