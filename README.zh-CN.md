@@ -1,7 +1,7 @@
 # UMR → DR02 Pro
 
 **SONIC / BONES-SEED 输入选择：优先使用 SOMA 原始版本**（BONES-SEED 原始 BVH＋匹配的
-uniform / proportional MHR 体型＋SOMA 模型资产），通过 `--input-type soma` 重定向。
+uniform / proportional MHR 体型＋SOMA 模型资产），默认使用 SOMA 输入进行重定向。
 GEAR-SONIC 预转换 SMPL 用于兼容或对照；其源姿态可能已有不连续性，接触修正不能消除上肢抽动。
 仅有 SMPL、SOMA 资源不可用或明确指定 SMPL 时，使用表面输入分支并记录来源及限制。
 目前这一选择有同名持续跛行样例的实测支持，未证明整个数据集均优于 SMPL。
@@ -30,7 +30,7 @@ GEAR-SONIC 预转换 SMPL 用于兼容或对照；其源姿态可能已有不连
 
 29DOF 改动属于本次测量的既有基线，不计入速度收益。
 使用 `--input-type soma --revision29 roll2` 选择该模型（qpos 36 / qvel 35 / 29 个执行器），
-不指定 `--revision29` 时仍使用默认 31DOF 模型。
+默认使用固定颈部的 29DOF 模型，不自动启用 `revision29 roll2`；可用 `--dof 31` 选择 SOMA 的 31DOF 模型。
 速度执行层需要显式提供绑定源码哈希的执行清单、identity memo 清单和逐次任务审计，
 普通 CLI 调用不会自动开启。生产流程继续处理完整动作，保留 50 Hz 时钟、求解参数、
 接触验收，以及原生/最终轨迹和报告。
@@ -41,9 +41,11 @@ GEAR-SONIC 预转换 SMPL 用于兼容或对照；其源姿态可能已有不连
 再修正 DR02 的实际脚底碰撞几何。`trajectory.npz` 是修正后参考，
 `native_trajectory.npz` 单独保留原生结果；`contact_report.json` 记录来源、误差、收敛状态与验收。
 需要原生结果时显式使用 `--no-contact-refine`。验收失败会报错，不能把失败结果当作完成。
-默认 31DOF 模型修正后的 `qvel[T,37]` 与 50 Hz `qpos` 按相同 MuJoCo 规则重新计算。
+默认 29DOF 模型修正后的 `qvel[T,35]` 与 50 Hz `qpos` 按相同 MuJoCo 规则重新计算。
 
-默认 SMPL-X 输入仍使用 `retarget --data DIR`。BONES 可选两条独立的真实输入分支：
+默认输入为原始 SOMA BVH 和匹配的 MHR 体型及 SOMA 资产，使用固定颈部的 29DOF 模型。
+拟合后的 SMPL-X 输入需显式指定 `--input-type smplx`；也可选用 SMPL 表面输入，
+这两种输入默认使用 31DOF。BONES 的两条真实输入分支如下：
 
 ```bash
 # 已准备好的标准 SMPL 估计表面；必须包含 vertices、joints 和 template_path，不能只传 SMPL72。
@@ -68,8 +70,8 @@ SOMA 形状可以是 uniform 或 proportional，以实际输入路径及匹配�
 
 ### 本地 BONES 29 自由度适配
 
-原生 SOMA 命令增加 `--dof 29`，会在对应训练和求解之前固定两个颈部关节，输出
-`qpos[T,36]` / `qvel[T,35]`，仍为 50 Hz；默认 `--dof 31` 保持上述公开版本的行为。
+原生 SOMA 命令默认使用 `--dof 29`，会在对应训练和求解之前固定两个颈部关节，输出
+`qpos[T,36]` / `qvel[T,35]`，仍为 50 Hz；可显式使用 `--dof 31`。
 29 自由度分支还会检查首帧直腿初始猜测的碰撞体高度，必要时仅抬高这个求解初值，
 避免蹲姿骨盆导致初始 QP 不可行。源动作、步长约束和最终接触验收阈值保持不变。
 
@@ -165,7 +167,7 @@ python umr.py play --trajectory examples/synthetic/robot_playback.npz
 三种指定方式任选一种：放入 `assets/body_models/SMPLX_NEUTRAL.npz`；设置环境变量 `SMPLX_MODEL`；或使用 `--model`。模型文件已被 Git 忽略，不随本仓库分发。
 
 ```bash
-python umr.py retarget --data examples/synthetic \
+python umr.py retarget --input-type smplx --data examples/synthetic \
   --model /absolute/path/SMPLX_NEUTRAL.npz
 ```
 
@@ -174,7 +176,7 @@ python umr.py retarget --data examples/synthetic \
 可用以下命令快速检查安装后的完整执行链；低点数和单轮训练只验证流程，不代表质量：
 
 ```bash
-python umr.py retarget --data examples/synthetic \
+python umr.py retarget --input-type smplx --data examples/synthetic \
   --model /absolute/path/SMPLX_NEUTRAL.npz \
   --points 64 --epochs 1 --max-frames 12 --tag smoke
 ```
@@ -193,7 +195,7 @@ python umr.py retarget --data examples/synthetic \
 python umr.py convert --data /path/to/raw_sequence \
   --output artifacts/my_converted_sequence \
   --model /absolute/path/SMPLX_NEUTRAL.npz
-python umr.py retarget --data artifacts/my_converted_sequence \
+python umr.py retarget --input-type smplx --data artifacts/my_converted_sequence \
   --model /absolute/path/SMPLX_NEUTRAL.npz
 ```
 
@@ -243,7 +245,7 @@ QP 后还有 LQR，必须检查滤波后的最终轨迹。运动学回放、几�
 
 2026-10-28 整合说明：`--dof 29` 使用本节的姿态与接触修复，仍输出 50Hz 的
 `qpos[T,36]` / `qvel[T,35]`。原有 `--revision29 baseline|roll2` 保留且隐含 29 自由度；
-普通 31 自由度入口维持默认值。批量入口为
+默认 SOMA 输入使用固定颈部的 29 自由度，不自动启用 `revision29 roll2`。批量入口为
 `python -m motion_retargeting.umr.retarget_soma_batch --help`，GPU 人体源计算可用环境变量
 `BONES_SOMA_SOURCE_GPUS=0,1` 显式选择；为空则纯 CPU。单段模块另提供 `--source-device`。
 对应学习使用 `.venv/bin/python` 的 CPU 环境。保留原生/最终文件和全部质检标记，

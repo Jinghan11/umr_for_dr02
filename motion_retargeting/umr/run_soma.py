@@ -39,7 +39,7 @@ def main():
     parser.add_argument('--source-device', default='cpu')
     parser.add_argument('--revision29', choices=['baseline','roll2'])
     parser.add_argument('--force', action='store_true')
-    parser.add_argument('--dof', type=int, choices=[29,31], default=31)
+    parser.add_argument('--dof', type=int, choices=[29,31], default=29)
     args = parser.parse_args()
     if min(args.points,args.epochs)<1 or args.max_frames<0 or Path(args.tag).name!=args.tag or args.tag in ('','.','..'):
         parser.error('Invalid point/epoch/frame counts or tag')

@@ -2,7 +2,7 @@
 
 For SONIC-related BONES-SEED retargeting, **prefer the original SOMA version**:
 use BONES-SEED BVH with its matching uniform/proportional MHR shape and SOMA
-assets via `--input-type soma`. Keep GEAR-SONIC's preconverted SMPL release for
+assets using the default SOMA input. Keep GEAR-SONIC's preconverted SMPL release for
 compatibility or comparisons when requested or when SOMA assets are unavailable,
 and record that choice. Preconverted SMPL can already contain pose discontinuities;
 foot-contact refinement does not repair upper-body jumps. The matched walking-loop
@@ -14,11 +14,11 @@ separate. Use `--no-contact-refine` for explicit native-only runs. Contact phase
 come from the corresponding human sole surface; velocities are recomputed on
 the 50 Hz clock. Failed contact acceptance stops the run.
 
-The default input remains fitted SMPL-X. BONES-SEED also supports
-`--input-type smpl_surface --data /path/to/surface.npz` for prepared, declared
-SMPL surface estimates, and `--input-type soma --data /path/to/motions_uniform/bvh/clip.bvh`
-for native SOMA BVH with matching dataset MHR shape and model assets. Both accept
-`--output /path/to/new_results` and default to the same DR02 solver/contact settings.
+The default input is native SOMA BVH with the matching dataset MHR shape and model
+assets, using a neck-fixed 29-DoF model. Use `--input-type smplx` for fitted
+SMPL-X or `--input-type smpl_surface --data /path/to/surface.npz` for prepared,
+declared SMPL surface estimates; these inputs default to 31 DoF. SOMA and SMPL
+surface inputs accept `--output /path/to/new_results`.
 SOMA resamples raw BVH transforms to 50 Hz before native surface reconstruction;
 it is never padded or converted into SMPL-X. See [contact details](motion_retargeting/umr/CONTACT.md).
 
@@ -30,8 +30,8 @@ The code runs from this directory after installing dependencies and providing a 
 
 ## 29-DoF SOMA posture and contact fixes — 2026-10-28
 
-Use `python umr.py retarget --input-type soma --dof 29 --data /path/to/clip.bvh
---output /path/to/new_results` to solve the neck-fixed model directly: 12 leg,
+Use `python umr.py retarget --data /path/to/clip.bvh
+--output /path/to/new_results` to run the default SOMA neck-fixed model: 12 leg,
 3 waist and 14 arm/wrist joints, with `qpos[T,36]`, `qvel[T,35]` at 50 Hz.
 Native QPs track source thigh/shin directions and knee flexion, starting from a
 collision-feasible pose. Contact refinement tracks source sole normals, continuous
@@ -46,7 +46,8 @@ also accepts `--source-device cpu|cuda:N`; correspondence training uses the CPU
 environment at `.venv/bin/python`. Use separate output directories after algorithm
 or runtime changes; previous native files and accepted labels are not reusable.
 The existing `--revision29 baseline|roll2` options remain available and imply
-29 DoF. This update retains the opt-in speed tools below; their October 26
+29 DoF; neither is enabled by default. Use `--dof 31` to select the 31-DoF SOMA model.
+This update retains the opt-in speed tools below; their October 26
 measurements describe the earlier configuration, not a benchmark of these fixes.
 Source SOMA assets and trajectory datasets are not distributed in this repository.
 
@@ -78,8 +79,8 @@ See the [measurement record](tools/bones_soma_batch_opt/benchmark_20261026.json)
 
 The 29DOF dependency changes establish the comparison baseline; their effects are
 not counted as speed gains. Use `--input-type soma --revision29 roll2` to select
-that model (36 qpos / 35 qvel / 29 actuators); omitting both `--revision29` and
-`--dof 29` retains the default 31DOF model. The speed layer requires explicit, hash-bound execution and
+that model (36 qpos / 35 qvel / 29 actuators). The default neck-fixed 29-DoF
+model does not enable `revision29 roll2`. The speed layer requires explicit, hash-bound execution and
 identity-memo manifests plus per-attempt audit integration. A normal CLI invocation
 does not silently enable it. Full motions, the 50 Hz clock, solver settings, contact
 acceptance and retained native/final outputs remain part of the production contract.
@@ -167,7 +168,7 @@ Either place it at `assets/body_models/SMPLX_NEUTRAL.npz`, set `SMPLX_MODEL=/abs
 Run the actual UMR pipeline after obtaining your model:
 
 ```bash
-python umr.py retarget --data examples/synthetic \
+python umr.py retarget --input-type smplx --data examples/synthetic \
   --model /absolute/path/SMPLX_NEUTRAL.npz
 ```
 
@@ -218,7 +219,7 @@ Use the dataset's actual metadata. Conversion expects `dataset: "hiphi"`, an `ac
 python umr.py convert --data /path/to/my_sequence \
   --output artifacts/my_sequence_converted \
   --model /absolute/path/SMPLX_NEUTRAL.npz
-python umr.py retarget --data artifacts/my_sequence_converted \
+python umr.py retarget --input-type smplx --data artifacts/my_sequence_converted \
   --model /absolute/path/SMPLX_NEUTRAL.npz
 ```
 
