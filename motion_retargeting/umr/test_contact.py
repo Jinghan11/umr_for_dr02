@@ -47,10 +47,13 @@ def _write_native(path, model, *, frames=12, fps=30., x=0.):
 
 
 def _source_points(frames):
-    points = np.zeros((frames, 2, 4, 3))
+    # Finite-area sole samples are required now that contact checks also fit
+    # source sole planes. Repeated coincident points cannot define a normal.
+    plane = np.array([[x, y, 0.] for x in (-.1, 0., .1) for y in (-.04, 0., .04)])
+    points = np.broadcast_to(plane, (frames, 2, 9, 3)).copy()
     points[..., 2] = .07
-    points[:, 0, :, 1] = .10
-    points[:, 1, :, 1] = -.10
+    points[:, 0, :, 1] += .10
+    points[:, 1, :, 1] -= .10
     return points
 
 
@@ -61,7 +64,8 @@ def mocked_pipeline(monkeypatch):
                 {"source_dir": str(source_dir), "source_frames": 12,
                  "frame_ids": np.asarray(frame_ids).tolist(), "frame_stride": 1})
 
-    def projection(model, qpos, fps, support_mask, *, config, confidence, source_foot_heights_m=None):
+    def projection(model, qpos, fps, support_mask, *, config, confidence, source_foot_heights_m=None, source_sole=None, source_knee_flexion=None):
+        assert source_sole is not None and source_sole['normals'].shape == (len(qpos), 2, 3)
         corrected = qpos.copy()
         corrected[:, 2] -= .08
         corrected[:, 0] += np.linspace(0, .03, len(qpos))

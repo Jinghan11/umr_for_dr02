@@ -28,6 +28,28 @@ Repository: [Jinghan11/umr_for_dr02](https://github.com/Jinghan11/umr_for_dr02).
 
 The code runs from this directory after installing dependencies and providing a licensed body model. It does not require the author's original project, datasets, Conda environments, cache, credentials, GPU numbering, or background services.
 
+## 29-DoF SOMA posture and contact fixes — 2026-10-28
+
+Use `python umr.py retarget --input-type soma --dof 29 --data /path/to/clip.bvh
+--output /path/to/new_results` to solve the neck-fixed model directly: 12 leg,
+3 waist and 14 arm/wrist joints, with `qpos[T,36]`, `qvel[T,35]` at 50 Hz.
+Native QPs track source thigh/shin directions and knee flexion, starting from a
+collision-feasible pose. Contact refinement tracks source sole normals, continuous
+material-point support and source turning, retaining the native trajectory and
+recomputing final velocities. Quality reports flag knee/direction errors, sole tilt,
+slip, penetration and temporal jitter; `review_required` is not an acceptance pass.
+
+The resumable CPU/GPU source runner is
+`python -m motion_retargeting.umr.retarget_soma_batch --help`. It verifies source,
+code, model and output identities and isolates failed clips. The single-clip module
+also accepts `--source-device cpu|cuda:N`; correspondence training uses the CPU
+environment at `.venv/bin/python`. Use separate output directories after algorithm
+or runtime changes; previous native files and accepted labels are not reusable.
+The existing `--revision29 baseline|roll2` options remain available and imply
+29 DoF. This update retains the opt-in speed tools below; their October 26
+measurements describe the earlier configuration, not a benchmark of these fixes.
+Source SOMA assets and trajectory datasets are not distributed in this repository.
+
 ## Large-dataset execution speed optimization — 2026-10-26
 
 This update reduces repeated work in **large-scale BONES-SEED SOMA retargeting**.
@@ -56,8 +78,8 @@ See the [measurement record](tools/bones_soma_batch_opt/benchmark_20261026.json)
 
 The 29DOF dependency changes establish the comparison baseline; their effects are
 not counted as speed gains. Use `--input-type soma --revision29 roll2` to select
-that model (36 qpos / 35 qvel / 29 actuators); omitting `--revision29` retains the
-default 31DOF model. The speed layer requires explicit, hash-bound execution and
+that model (36 qpos / 35 qvel / 29 actuators); omitting both `--revision29` and
+`--dof 29` retains the default 31DOF model. The speed layer requires explicit, hash-bound execution and
 identity-memo manifests plus per-attempt audit integration. A normal CLI invocation
 does not silently enable it. Full motions, the 50 Hz clock, solver settings, contact
 acceptance and retained native/final outputs remain part of the production contract.

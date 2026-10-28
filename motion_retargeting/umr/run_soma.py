@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import mujoco
 import numpy as np
 
+from motion_retargeting.umr.soma_runtime import runtime_identity, validate_device
 from motion_retargeting.umr import run as common
 from motion_retargeting.umr.contact import algorithm_identity, refine_file
 from motion_retargeting.umr.curated.validate import validate_trajectory
@@ -35,32 +36,43 @@ def main():
     parser.add_argument('--tag', default='dr02')
     parser.add_argument('--ground-mode', choices=['mujoco_collision','surface_slots_all'], default='mujoco_collision')
     parser.add_argument('--contact-refine', action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument('--source-device', default='cpu')
     parser.add_argument('--revision29', choices=['baseline','roll2'])
     parser.add_argument('--force', action='store_true')
+    parser.add_argument('--dof', type=int, choices=[29,31], default=31)
     args = parser.parse_args()
     if min(args.points,args.epochs)<1 or args.max_frames<0 or Path(args.tag).name!=args.tag or args.tag in ('','.','..'):
         parser.error('Invalid point/epoch/frame counts or tag')
     if len({p.stem for p in args.data}) != len(args.data): parser.error('Duplicate motion IDs')
-    os.environ.setdefault('UMR_SOMA_DEVICE','cpu')
+    if args.revision29:
+        args.dof = 29
+    os.environ['UMR_SOMA_DEVICE'] = args.source_device
+    if args.source_device == 'cpu':
+        os.environ['CUDA_VISIBLE_DEVICES'] = ''
+    validate_device(args.source_device)
+    runtime = dict(runtime_identity(), source_device=args.source_device)
     output = args.output.resolve() if args.output else ROOT/'outputs/soma_umr'/args.tag
     settings = SimpleNamespace(iters=15,pose_init_iters=60,ground_mode=args.ground_mode,
                                ground_margin=.005,trajectory_filter='lqr',step_size=.05)
-    robot_xml=ROBOT_XML
-    revision=None
+    robot_xml = ROBOT_XML
+    revision = None
+    if args.dof == 29:
+        from motion_retargeting.umr.dr02_29dof import build_model, JOINT_NAMES
+        robot_xml = build_model(ROOT/'artifacts/soma_umr/robot_29dof/DR02_pro_29dof.xml')
     if args.revision29:
         from motion_retargeting.umr import revision29
         robot_xml,scene=revision29.build_model(ROBOT_XML,ROOT/'artifacts/soma_29dof_roll_v1/models')
         scene_sha=common.file_sha256(scene)
         revision={'version':revision29.VERSION,'roll_multiplier':2. if args.revision29=='roll2' else 1.,'neutral_cost':revision29.NEUTRAL_COST,'code_sha256':common.file_sha256(Path(revision29.__file__)),'effort_implemented':False}
     else:
-        scene,scene_sha=solver_scene(settings)
+        scene,scene_sha=solver_scene(settings, robot_xml=robot_xml)
     model=mujoco.MjModel.from_xml_path(str(robot_xml))
-    robot=robot_config()
+    robot = robot_config(robot_xml=robot_xml)
     if revision:
-        robot.update(xml=str(robot_xml),name=revision29.VERSION,
-                     tpose_qpos={name:value for name,value in robot['tpose_qpos'].items()
-                                 if name not in revision29.NECK})
+        robot['name'] = revision29.VERSION
     names=[model.joint(i).name for i in range(model.njnt) if model.jnt_qposadr[i]>=7]
+    if args.dof == 29 and ((model.nq,model.nv,model.nu) != (36,35,29) or names != JOINT_NAMES):
+        raise ValueError('Invalid neck-fixed 29-DoF model or joint order')
     for raw_path in args.data:
         raw_path=raw_path.resolve()
         raw=soma_source.load_soma_bvh_motion(raw_path)
@@ -97,7 +109,9 @@ def main():
                    'skeleton_usd':common.file_identity(usd),
                    'segmentation':common.file_identity(segmentation),
                    'points':args.points,'epochs':args.epochs,'algorithm':common.algorithm_identity(),
-                   'robot':{'official_assets':common.robot_identity(ROBOT_XML),'model_xml':common.file_sha256(robot_xml)},'soma_template':raw['soma_template_name'],'revision':({'version':revision['version'],'code_sha256':revision['code_sha256'],'head_targets':0} if revision else None)}
+                   'robot':common.robot_identity(ROBOT_XML),'target_robot':common.file_identity(robot_xml),
+                   'dof':args.dof,'soma_template':raw['soma_template_name'],
+                   'revision':({'version':revision['version'],'code_sha256':revision['code_sha256'],'head_targets':0} if revision else None)}
         cache=ROOT/'artifacts/soma_umr/correspondence'/common.json_sha256(canonical)[:16]
         cache.mkdir(parents=True,exist_ok=True)
         config={'extends':str(METHOD/'upstream/humanoid_retarget_defaults_bones_seed.json'),
@@ -112,9 +126,11 @@ def main():
         env=os.environ.copy()
         env.pop('UMR_SMPL_TEMPLATE',None)
         env.update(PYTHONPATH=os.pathsep.join([str(ROOT),str(METHOD),str(METHOD/'upstream/scripts')]),
-          UMR_SOMA_ASSETS_PATH=str(assets),UMR_SOMA_DEVICE='cpu',CUDA_VISIBLE_DEVICES='',OMP_NUM_THREADS='1',OPENBLAS_NUM_THREADS='1',MKL_NUM_THREADS='1',PYTHONUNBUFFERED='1')
+          UMR_SOMA_ASSETS_PATH=str(assets),UMR_SOMA_DEVICE=args.source_device,OMP_NUM_THREADS='1',OPENBLAS_NUM_THREADS='1',MKL_NUM_THREADS='1',PYTHONUNBUFFERED='1')
         os.environ['UMR_SOMA_ASSETS_PATH']=str(assets)
         command=[sys.executable,str(METHOD/'upstream/scripts/humanoid_retarget_pipeline.py')]
+        training_env = dict(env, UMR_SOMA_DEVICE='cpu', CUDA_VISIBLE_DEVICES='')
+        training_command = [str(ROOT/'.venv/bin/python'), command[1]]
         with (cache/'cache.lock').open('w') as lock:
             fcntl.flock(lock,fcntl.LOCK_EX)
             artifacts=[cache/'dataset.npz',cache/'train/correspondence_slots_final.npz']
@@ -126,7 +142,7 @@ def main():
                 print(f'[SOMA UMR] build/train {args.points} points, {args.epochs} epochs; {cache}',flush=True)
                 with (cache/'training.log').open('a') as log:
                     for stage in ('build','train'):
-                        subprocess.run(command+['--config',str(canonical_config),'--stage',stage,'--force-'+stage,'--skip-view'],cwd=ROOT,env=env,stdout=log,stderr=subprocess.STDOUT,check=True)
+                        subprocess.run(training_command+['--config',str(canonical_config),'--stage',stage,'--force-'+stage,'--skip-view'],cwd=ROOT,env=training_env,stdout=log,stderr=subprocess.STDOUT,check=True)
                 common.atomic_json(marker,{'canonical':canonical,'sha256':{str(p):common.file_sha256(p) for p in artifacts}})
         folder=output/raw_path.stem;folder.mkdir(parents=True,exist_ok=True)
         with (folder/'run.lock').open('w') as lock:
@@ -135,9 +151,17 @@ def main():
             if revision:
                 config['solver']['revision29']=revision
                 config['solver']['body_segment']={'cost_config':{'head':{'sample_slots':0,'point_cost':0.,'normal_cost':0.}}}
-            config['retarget']={'out':str(folder/'upstream.npz'),'source_ground_align':'none','smplx_device':'cpu','smplx_batch_size':32,'stream_chunk_frames':120}
+            retarget_command=command
+            initialization_identity=None
+            if args.dof == 29 and args.ground_mode == 'mujoco_collision':
+                from motion_retargeting.umr.soma_pipeline import VERSION
+                config['soma_initialization']={'version':VERSION}
+                initialization_identity={name:common.file_identity(METHOD/name) for name in ('soma_pipeline.py','soma_legs.py')}
+                retarget_command=[sys.executable,str(METHOD/'soma_pipeline.py')]
+            config['retarget']={'out':str(folder/'upstream.npz'),'source_ground_align':'none','smplx_device':args.source_device,'smplx_batch_size':32,'stream_chunk_frames':120}
             config_path=folder/'config.json';common.atomic_json(config_path,config)
-            signature=common.json_sha256({'canonical':canonical,'source':raw_identity,'config':config,'solver_scene':scene_sha,'runner':common.file_sha256(Path(__file__))})
+            signature=common.json_sha256({'canonical':canonical,'source':raw_identity,'config':config,'solver_scene':scene_sha,'runner':common.file_sha256(Path(__file__)),'initialization':initialization_identity,'runtime':runtime})
+            common.atomic_json(folder/'runtime.json', runtime)
             native=folder/'native_trajectory.npz';marker=folder/'native_identity.json'
             valid=not args.force and native.exists() and marker.exists()
             targets=folder/'upstream.targets.json'
@@ -145,7 +169,7 @@ def main():
             if not valid:
                 print(f'[SOMA UMR] solve {raw_path.stem}: {len(ids)} frames at 50 Hz; {folder}',flush=True)
                 with (folder/'retarget.log').open('a') as log:
-                    subprocess.run(command+['--config',str(config_path),'--stage','retarget','--force-retarget','--skip-view'],cwd=ROOT,env=env,stdout=log,stderr=subprocess.STDOUT,check=True)
+                    subprocess.run(retarget_command+['--config',str(config_path),'--stage','retarget','--force-retarget','--skip-view'],cwd=ROOT,env=env,stdout=log,stderr=subprocess.STDOUT,check=True)
                 with np.load(folder/'upstream.npz',allow_pickle=False) as d:
                     qpos=d['qpos'].astype(float);actual=d['frame_ids'];fps=float(d['fps'].reshape(-1)[0]);scale=float(d['smpl_scale'].reshape(-1)[0])
                 if qpos.shape!=(len(ids),model.nq) or not np.isfinite(qpos).all() or fps!=50. or not np.array_equal(ids,actual):raise ValueError('Invalid native SOMA output frames/clock/poses')
@@ -154,16 +178,16 @@ def main():
                   original_frame_ids=np.asarray(clock['source_frame_ids'])[ids],original_time_seconds=np.asarray(clock['source_time_seconds'])[ids],original_fps=1/clock['source_frame_time'],
                   original_frame_count=clock['source_frame_count'],source_input=str(path),raw_source_input=str(raw_path),surface_scale=scale,smpl_scale=scale,robot_xml=str(robot_xml),method_id='umr_soma',clip_id=raw_path.stem)
                 common.atomic_json(marker,{'signature':signature,'sha256':common.file_sha256(native),'targets_sha256':common.file_sha256(targets) if revision else None})
-            native_validation=validate_trajectory(native,output_dir=folder/'native_validation',model_path=robot_xml)
+            native_validation=validate_trajectory(native,output_dir=folder/'native_validation',robot_xml=robot_xml)
             contact_report=None
             if args.contact_refine:
                 print(f'[SOMA UMR] contact refinement {raw_path.stem}',flush=True)
                 from motion_retargeting.umr.contact_projection import ContactProjectionConfig
                 projection=ContactProjectionConfig(revision29_multiplier=revision['roll_multiplier']) if revision else None
-                contact_report=refine_file(native,folder,source_dir=path,overwrite=True,model_path=robot_xml,projection_config=projection)
+                contact_report=refine_file(native,folder,source_dir=path,model_path=robot_xml,overwrite=True,projection_config=projection)
                 if not contact_report['accepted']:raise RuntimeError(f'Contact acceptance failed: {contact_report["quality_flags"]}; {folder}')
             else:(folder/'trajectory.npz').write_bytes(native.read_bytes())
-            validation=validate_trajectory(folder/'trajectory.npz',output_dir=folder/'validation',model_path=robot_xml)
+            validation=validate_trajectory(folder/'trajectory.npz',output_dir=folder/'validation',robot_xml=robot_xml)
             common.atomic_json(folder/'run.json',{'status':'complete','native_signature':signature,'canonical':canonical,'clock':clock,'source':str(raw_path),'contact_algorithm':algorithm_identity() if args.contact_refine else None,
                 'revision':revision,'native_validation':native_validation,'contact_refinement':contact_report,'validation':validation,'trajectory_path':str(folder/'trajectory.npz'),'trajectory_sha256':common.file_sha256(folder/'trajectory.npz')})
             print(f'[SOMA UMR] complete: {folder/"trajectory.npz"}',flush=True)

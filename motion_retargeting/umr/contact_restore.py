@@ -18,6 +18,8 @@ def restore_frame(model, qpos, foot_geom_ids, local_points, support, anchors, *,
                   clearance=.001, aligned_qpos=None, lower=None, upper=None,
                   addresses=None, neighbor_correction=None, target_centers=None,
                   source_gap_targets=None, source_height_weight=80., swing_weight=12.,
+                  target_rotations=None, source_normals=None, source_normal_weight=30.,
+                  heading_weight=30.,
                   max_iterations=120, source_height_tolerance=.01,
                   max_root_adjustment_m=.05, max_joint_adjustment_rad=.2):
     """Return a new pose and an explicit strict-feasibility report.
@@ -35,7 +37,7 @@ def restore_frame(model, qpos, foot_geom_ids, local_points, support, anchors, *,
     """
     # Imported at call time to let the main projector call this restoration
     # helper without creating a module-import cycle.
-    from motion_retargeting.umr.contact_projection import _geometry, _lowest_point
+    from motion_retargeting.umr.contact_projection import _geometry, _lowest_point, _skew
 
     candidate = np.asarray(qpos, dtype=np.float64)
     baseline = candidate.copy() if aligned_qpos is None else np.asarray(aligned_qpos, dtype=np.float64)
@@ -52,7 +54,7 @@ def restore_frame(model, qpos, foot_geom_ids, local_points, support, anchors, *,
     if geoms.shape != (2,) or not np.issubdtype(geoms.dtype, np.integer):
         raise ValueError("foot_geom_ids must contain two integer geometry IDs")
     scalars = (clearance, source_height_weight, swing_weight, source_height_tolerance,
-               max_root_adjustment_m, max_joint_adjustment_rad)
+               max_root_adjustment_m, max_joint_adjustment_rad, source_normal_weight, heading_weight)
     if not np.isfinite(scalars).all() or min(scalars) < 0 or min(source_height_tolerance, max_root_adjustment_m, max_joint_adjustment_rad) <= 0:
         raise ValueError("Restoration thresholds and weights must be finite and valid")
     if isinstance(max_iterations, bool) or int(max_iterations) != max_iterations or max_iterations < 1:
@@ -96,9 +98,29 @@ def restore_frame(model, qpos, foot_geom_ids, local_points, support, anchors, *,
         raise ValueError("target_centers must be finite [2,3]")
     if height_targets is not None and (height_targets.shape != (2,) or not np.isfinite(height_targets).all()):
         raise ValueError("source_gap_targets must be finite [2]")
+    rotation_targets = None if target_rotations is None else np.asarray(target_rotations, dtype=float)
+    normal_targets = None if source_normals is None else np.asarray(source_normals, dtype=float)
+    if rotation_targets is not None and (rotation_targets.shape != (2, 3, 3)
+            or not np.isfinite(rotation_targets).all()
+            or not np.allclose(rotation_targets.swapaxes(-2, -1) @ rotation_targets, np.eye(3), atol=1e-6)
+            or not np.allclose(np.linalg.det(rotation_targets), 1., atol=1e-6)):
+        raise ValueError('target_rotations must contain two proper rotations')
+    if normal_targets is not None and (normal_targets.shape != (2, 3)
+            or not np.isfinite(normal_targets).all()
+            or not np.allclose(np.linalg.norm(normal_targets, axis=-1), 1., atol=1e-6)):
+        raise ValueError('source_normals must contain two unit normals')
 
+    flat_center = (mask & (np.linalg.norm(local[:, :2], axis=1) < 1e-12)
+                   & (np.abs(local[:, 2] + model.geom_size[geoms, 2]) < 1e-12))
+    flat_geoms = set(geoms[flat_center].tolist())
     collision_rows = []
     for geom in collisions:
+        if geom in flat_geoms:
+            # A sole-centre contact and nonpenetration already imply a level
+            # sole. Express that geometry with two orientation equalities;
+            # the redundant +/- corner inequalities have no strict feasible
+            # direction at the flat solution and make SLSQP stall.
+            continue
         if int(model.geom_type[geom]) == int(mujoco.mjtGeom.mjGEOM_BOX):
             size = model.geom_size[geom]
             for x in (-size[0], size[0]):
@@ -121,11 +143,28 @@ def restore_frame(model, qpos, foot_geom_ids, local_points, support, anchors, *,
         equality, equality_jacobian, inequality, inequality_jacobian = [], [], [], []
         soft, soft_jacobian = [], []
         for foot, geom in enumerate(geoms):
+            rotation = data.geom_xmat[geom].reshape(3, 3)
+            if rotation_targets is not None or normal_targets is not None:
+                mujoco.mj_jac(model, data, jacp, jacr, data.geom_xpos[geom], bodies[foot])
+                for axis, target, weight in (
+                        (0, None if rotation_targets is None else rotation_targets[foot, :, 0], heading_weight),
+                        (2, None if normal_targets is None else normal_targets[foot], source_normal_weight)):
+                    if target is not None:
+                        vector = rotation[:, axis]
+                        soft.extend(weight * (vector - target))
+                        soft_jacobian.extend(-weight * _skew(vector) @ jacr[:, dofs])
             if mask[foot]:
                 point = data.geom_xpos[geom] + data.geom_xmat[geom].reshape(3, 3) @ local[foot]
                 mujoco.mj_jac(model, data, jacp, jacr, point, bodies[foot])
                 equality.extend(point - targets[foot])
                 equality_jacobian.extend(jacp[:, dofs].copy())
+                if flat_center[foot]:
+                    normal = rotation[:, 2]
+                    normal_jacobian = -_skew(normal) @ jacr[:, dofs]
+                    equality.extend(normal[:2])
+                    equality_jacobian.extend(normal_jacobian[:2])
+                    inequality.append(normal[2])
+                    inequality_jacobian.append(normal_jacobian[2])
             else:
                 if swing_targets is not None:
                     centre = data.geom_xpos[geom] + data.geom_xmat[geom].reshape(3, 3) @ np.array([0., 0., -model.geom_size[geom, 2]])
@@ -199,6 +238,21 @@ def restore_frame(model, qpos, foot_geom_ids, local_points, support, anchors, *,
     equality, _, inequality, _, _, _ = evaluate(result.x)
     equality_error = float(np.max(np.abs(equality), initial=0.))
     inequality_error = float(max(0., -inequality.min(initial=0.)))
+    # Independently check every original collision, including the flat-foot
+    # corners eliminated from the optimizer's redundant constraint system.
+    data.qpos[:] = baseline
+    data.qpos[addresses] += result.x
+    mujoco.mj_forward(model, data)
+    physical_error = max(0., max(clearance - _lowest_point(model, data, g)[2] for g in collisions))
+    inequality_error = max(inequality_error, float(physical_error))
+    material_errors = []
+    normal_errors = []
+    for foot, geom in enumerate(geoms):
+        if mask[foot]:
+            rotation = data.geom_xmat[geom].reshape(3, 3)
+            material_errors.extend(data.geom_xpos[geom] + rotation @ local[foot] - targets[foot])
+            if flat_center[foot]:
+                normal_errors.extend(rotation[:2, 2])
     bounds_error = float(max(0., (lo - result.x).max(), (result.x - hi).max()))
     feasible = bool(np.isfinite(result.x).all() and equality_error <= 1e-7
                     and inequality_error <= 1e-8 and bounds_error <= 1e-10)
@@ -210,13 +264,18 @@ def restore_frame(model, qpos, foot_geom_ids, local_points, support, anchors, *,
         "reason": "verified_strict_geometry" if feasible else "strict_geometry_not_restored",
         "optimizer_status": int(result.status), "message": str(result.message),
         "iterations": int(result.nit), "objective": float(result.fun),
-        "max_material_xyz_error_m": equality_error,
+        "max_material_xyz_error_m": float(np.max(np.abs(material_errors), initial=0.)),
+        "max_flat_normal_xy_error": float(np.max(np.abs(normal_errors), initial=0.)),
+        "max_equality_residual_mixed_units": equality_error,
         "max_inequality_violation_m": inequality_error, "max_bound_violation": bounds_error,
-        "before_max_material_xyz_error_m": float(np.max(np.abs(before[0]), initial=0.)),
+        "before_max_equality_residual_mixed_units": float(np.max(np.abs(before[0]), initial=0.)),
         "before_max_inequality_violation_m": float(max(0., -before[2].min(initial=0.))),
         "max_root_restoration_m": float(np.max(np.abs(corrected[:3] - candidate[:3]))),
         "max_joint_restoration_rad": float(np.max(np.abs(corrected[addresses[3:]] - candidate[addresses[3:]]))),
         "source_height_hard_bounds": height_targets is not None,
+        "source_orientation_preserved": normal_targets is not None,
+        "sequence_heading_preserved": rotation_targets is not None,
+        "flat_center_orientation_equalities": int(flat_center.sum()),
         "source_height_tolerance_m": float(source_height_tolerance),
         "returned_candidate_unchanged": not feasible,
     }

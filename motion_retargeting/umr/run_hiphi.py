@@ -128,8 +128,10 @@ def inspect_sequence(path: Path, args) -> dict:
             "objects": metadata.get("objects", []), "selected_frame_ids": frame_ids.tolist()}
 
 
-def robot_config() -> dict:
-    return {"name": "dr02_pro", "xml": str(ROBOT_XML), "point_cloud_center": "body:base_link",
+def robot_config(robot_xml=None) -> dict:
+    robot_xml = Path(robot_xml) if robot_xml is not None else ROBOT_XML
+    model = mujoco.MjModel.from_xml_path(str(robot_xml))
+    return {"name": "dr02_pro_29dof" if model.nu == 29 else "dr02_pro", "xml": str(robot_xml), "point_cloud_center": "body:base_link",
             "sample_pose": "tpose", "tpose_qpos": json.loads((METHOD / "tpose_validation.json").read_text())["tpose_qpos"],
             "visual_geom_policy": "auto", "to_smpl_frame": True,
             "xml_policy": {"add_freejoint_root": False}}
@@ -148,17 +150,18 @@ def solver_config(args) -> dict:
     return result
 
 
-def solver_scene(args) -> tuple[Path, str]:
+def solver_scene(args, robot_xml=None) -> tuple[Path, str]:
     """Add only a z=0 world plane; preserve the official robot and qpos layout."""
+    robot_xml = Path(robot_xml) if robot_xml is not None else ROBOT_XML
     if args.ground_mode != "mujoco_collision":
-        return ROBOT_XML, sha256(ROBOT_XML)
-    tree = ET.parse(ROBOT_XML)
+        return robot_xml, sha256(robot_xml)
+    tree = ET.parse(robot_xml)
     root = tree.getroot()
     compiler = root.find("compiler")
     for kind, directory_attr in (("mesh", "meshdir"), ("texture", "texturedir")):
         directory = Path(compiler.get(directory_attr, "")) if compiler is not None else Path()
         if not directory.is_absolute():
-            directory = ROBOT_XML.parent / directory
+            directory = robot_xml.parent / directory
         for asset in root.findall(f"./asset/{kind}"):
             if asset.get("file"):
                 path = Path(asset.get("file"))
@@ -167,7 +170,7 @@ def solver_scene(args) -> tuple[Path, str]:
             compiler.attrib.pop(directory_attr, None)
     world = root.find("worldbody")
     if world is None:
-        raise ValueError(f"Official robot is missing worldbody: {ROBOT_XML}")
+        raise ValueError(f"Official robot is missing worldbody: {robot_xml}")
     ET.SubElement(world, "geom", {"name": "hiphi_umr_ground", "type": "plane", "pos": "0 0 0",
                                 "size": "100 100 0.1", "contype": "1", "conaffinity": "1"})
     scene_text = ET.tostring(root, encoding="unicode") + "\n"
@@ -178,7 +181,7 @@ def solver_scene(args) -> tuple[Path, str]:
         scene_path.write_text(scene_text)
     elif sha256(scene_path) != scene_digest:
         raise ValueError(f"Derived solver scene content changed unexpectedly: {scene_path}")
-    original = mujoco.MjModel.from_xml_path(str(ROBOT_XML))
+    original = mujoco.MjModel.from_xml_path(str(robot_xml))
     derived = mujoco.MjModel.from_xml_path(str(scene_path))
     if (derived.nq, derived.nv, derived.nu, derived.nbody) != (original.nq, original.nv, original.nu, original.nbody):
         raise ValueError("Derived solver scene changed robot dimensions")

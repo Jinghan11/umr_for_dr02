@@ -30,3 +30,34 @@ These are execution and time-mapping checks, not a 30-vs-50 Hz accuracy ablation
 - The matched 414-frame comparison video and the 1,269-frame three-clip SMPL video were fully decoded and their frame counts and 50 Hz clocks checked. Local reports are under the ignored project outputs; captured motion, fitted MHR shape, model assets, correspondences and videos are not distributed with the code.
 
 This supports preferring original SOMA for SONIC-related BONES-SEED inputs. It is one matched-clip observation, not a dataset-wide ranking or single-variable ablation: surface templates, topology, semantic adapters and canonical centers differ by source family. These checks do not replace the historical portable-environment audit or establish dynamics, controller tracking or hardware safety.
+# 2026-10-28: 29-DoF semantic legs and source-sole contact integration
+
+The production SOMA fixes were integrated with the existing opt-in `revision29`
+and batch-speed tools in a separate worktree. The running production source tree
+was kept frozen. The new 29-DoF model retains the official robot geometry, inertias
+and remaining joint limits while fixing both neck joints before optimization.
+
+Validation in the integrated worktree (Python 3.12, existing CPU dependencies):
+
+```bash
+python -m pytest tests motion_retargeting/umr/test_contact.py \
+  motion_retargeting/umr/test_revision29.py tools/bones_soma_batch_opt/test_safety.py -q
+# 107 passed, 1 skipped; 6 subtests passed
+
+python -m pytest motion_retargeting/umr/test_contact*.py \
+  tests/test_contact_continuity.py -q
+# 87 passed, 6 skipped; 9 subtests passed
+```
+
+These suites overlap. They check neck-fixed model dimensions and joint ordering,
+feasible initial guesses, semantic leg Jacobians, source sole orientation and
+heading, same-material contact continuity, output/source identity protection,
+the retained roll revision and opt-in execution safety. The combined roll-weighted
+contact residual/anchor Jacobian was additionally checked by finite differences.
+Both public and batch CLI help entry points were exercised.
+
+Optional asset-dependent tests can skip when their external fixtures are absent.
+These are regression checks, not a new full-dataset retargeting run, a dataset-wide
+acceptance estimate, or a dynamics/hardware validation. The October 26 performance
+measurements below belong to their recorded configuration. Algorithm/runtime
+changes require fresh output identities and new acceptance decisions.

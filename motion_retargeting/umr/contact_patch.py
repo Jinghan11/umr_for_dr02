@@ -25,7 +25,8 @@ def _sole_corners(size):
 
 
 def build_contact_patches(model, qpos, foot_geom_ids, support_mask, confidence=None,
-                          *, clearance=.001, release_height_m=.006):
+                          *, clearance=.001, release_height_m=.006,
+                          reference_rotations=None, flat_support_mask=None):
     """Return local points, patch IDs and records for left/right support.
 
     Inputs are globally height-aligned qpos and immutable source support labels.
@@ -57,6 +58,14 @@ def build_contact_patches(model, qpos, foot_geom_ids, support_mask, confidence=N
         raise ValueError("confidence must be finite [T,2] values in [0,1]")
     mask = mask.astype(bool)
     frames = len(poses)
+    reference = None if reference_rotations is None else np.asarray(reference_rotations, dtype=float)
+    flat = np.zeros_like(mask) if flat_support_mask is None else np.asarray(flat_support_mask, dtype=bool)
+    if reference is not None and (reference.shape != (frames, 2, 3, 3) or not np.isfinite(reference).all()
+            or not np.allclose(reference.swapaxes(-2, -1) @ reference, np.eye(3), atol=1e-6)
+            or not np.allclose(np.linalg.det(reference), 1., atol=1e-6)):
+        raise ValueError('reference_rotations must contain finite proper rotations [T,2,3,3]')
+    if flat.shape != mask.shape or (flat & ~mask).any():
+        raise ValueError('flat_support_mask must be a subset of source support [T,2]')
     sizes = model.geom_size[geoms]
     corners = [_sole_corners(size) for size in sizes]
     centres = np.zeros((2, 3))
@@ -71,6 +80,11 @@ def build_contact_patches(model, qpos, foot_geom_ids, support_mask, confidence=N
         mujoco.mj_forward(model, data)
         positions[frame] = data.geom_xpos[geoms]
         rotations[frame] = data.geom_xmat[geoms].reshape(2, 3, 3)
+    if reference is not None:
+        # Keep native sole-centre translation, replacing only orientation. A
+        # native toe-standing pose must not dictate the source material patch.
+        positions += np.einsum('tfij,fj->tfi', rotations - reference, centres)
+        rotations = reference
 
     records = []
     for foot in range(2):
@@ -86,10 +100,18 @@ def build_contact_patches(model, qpos, foot_geom_ids, support_mask, confidence=N
             bottom = -float(np.abs(rotation[2]) @ sizes[foot])
             release = (active_local is not None
                        and float(rotation[2] @ active_local) - bottom > release_height_m)
-            if active_local is None or release:
+            enter_flat = flat[frame, foot] and (active_local is None or not np.allclose(active_local, centres[foot]))
+            # Once source flat support ends, a centre contact plus the box
+            # bottom would still force an exactly horizontal foot until the
+            # 6-mm release threshold. Release that centre immediately; actual
+            # shared-material constraints connect it to the new low patch.
+            leave_flat = (reference is not None and frame > 0 and flat[frame - 1, foot]
+                          and not flat[frame, foot] and active_local is not None
+                          and np.allclose(active_local, centres[foot]))
+            if active_local is None or release or enter_flat or leave_flat:
                 heights = corners[foot] @ rotation[2]
                 lowest = heights <= heights.min() + 1e-9
-                selected = corners[foot][lowest].mean(axis=0)
+                selected = centres[foot].copy() if flat[frame, foot] else corners[foot][lowest].mean(axis=0)
                 # For an upside-down foot, all sole points can be high above
                 # the true box bottom. Retain the selected point so later
                 # geometric validation reports the contradiction instead of
@@ -113,4 +135,30 @@ def build_contact_patches(model, qpos, foot_geom_ids, support_mask, confidence=N
         world = positions[start:end, foot] + np.einsum("tij,j->ti", rotations[start:end, foot], point)
         record["anchor_xy_m"] = [_weighted_median(world[:, axis], conf[start:end, foot]) for axis in (0, 1)]
         record["clearance_m"] = float(clearance)
+    if reference is not None:
+        # During one stance, changing heel/sole/toe material points must not
+        # independently teleport the foot to a new median anchor. Integrate
+        # each point change at the transition orientation and fit ONE stance
+        # translation. This preserves rolling while keeping anchors continuous.
+        for foot in range(2):
+            edges = np.diff(np.r_[False, mask[:, foot], False].astype(np.int8))
+            for start, end in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)):
+                stance = [r for r in records if r['foot'] == foot and start <= r['start_frame'] < end]
+                relative, offsets, desired, weights = np.zeros(2), [], [], []
+                previous = None
+                for record in stance:
+                    lo, hi = record['start_frame'], record['end_frame_exclusive']
+                    point = np.asarray(record['local_point_m'])
+                    if previous is not None:
+                        relative = relative + (rotations[lo, foot] @ (point - previous))[:2]
+                    offsets.append(relative.copy())
+                    world = positions[lo:hi, foot] + np.einsum('tij,j->ti', rotations[lo:hi, foot], point)
+                    desired.append(world[:, :2] - relative)
+                    weights.append(conf[lo:hi, foot])
+                    previous = point
+                desired, weights = np.concatenate(desired), np.concatenate(weights)
+                origin = np.asarray([_weighted_median(desired[:, axis], weights) for axis in (0, 1)])
+                for record, offset in zip(stance, offsets):
+                    record['anchor_xy_m'] = (origin + offset).tolist()
+                    record['anchor_source'] = 'source_sole_orientation_continuous_stance'
     return local_points, patch_ids, records

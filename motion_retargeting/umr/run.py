@@ -51,6 +51,9 @@ def algorithm_identity():
     # Hash the vendored source itself; a nested .git directory is not required.
     paths = [METHOD / "run.py", METHOD / "resampling.py", METHOD / "smpl_surface_adapter.py", METHOD / "requirements.lock.txt",
              UPSTREAM / "humanoid_retarget_defaults.json", UPSTREAM / "requirements-umr.txt"]
+    # SOMA extends BONES defaults; hashing only the generic defaults silently
+    # reused direct-run native/correspondence caches after an inherited change.
+    paths.extend(UPSTREAM.glob("*.json"))
     paths.extend(UPSTREAM.rglob("*.py"))
     return json_sha256({str(path.relative_to(METHOD)): file_sha256(path)
                         for path in sorted(set(paths))})

@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict
 import hashlib
+import importlib
 import json
 import os
 from pathlib import Path
@@ -24,7 +25,7 @@ from .contact_source import load_source_feet
 
 ROOT = Path(__file__).resolve().parents[2]
 ROBOT_XML = ROOT / 'mujoco/dr02_pro/upstream/DR02/mjcf/pro/DR02_pro.xml'
-VERSION = 'umr_dr02_contact_v1'
+VERSION = 'umr_dr02_contact_v4_semantic_legs'
 
 
 def sha256(path):
@@ -36,12 +37,20 @@ def sha256(path):
 
 
 _LOADED_ALGORITHM_SHA256 = {
-    p.name: sha256(p) for p in sorted([*Path(__file__).parent.glob('contact*.py'), Path(__file__).parent/'revision29.py'])
+    p.name: sha256(p) for p in sorted([*Path(__file__).parent.glob('contact*.py'), Path(__file__).with_name('soma_legs.py'), Path(__file__).with_name('revision29.py')])
 }
+# Load every contact helper now, before accepting a hash as the identity of
+# this process. Lazy imports after edits could otherwise mix two algorithms.
+for _module in sorted(_LOADED_ALGORITHM_SHA256):
+    if _module != Path(__file__).name and not _module.startswith('test_'):
+        importlib.import_module('.' + Path(_module).stem, __package__)
+if _LOADED_ALGORITHM_SHA256 != {p.name: sha256(p) for p in sorted([*Path(__file__).parent.glob('contact*.py'), Path(__file__).with_name('soma_legs.py'), Path(__file__).with_name('revision29.py')])}:
+    raise RuntimeError('Contact code changed while importing the algorithm')
 
 
 def algorithm_identity():
-    # Pin what this process imported, even while another run edits the files.
+    # A batch additionally checks these loaded hashes against its frozen code
+    # and the live files immediately before publishing a completed result.
     return dict(_LOADED_ALGORITHM_SHA256)
 
 
@@ -192,8 +201,8 @@ def refine_payload(payload, source_dir, *, model_path=ROBOT_XML,
     fps = float(_scalar(payload, 'fps'))
     model_path = Path(model_path).resolve()
     model = mujoco.MjModel.from_xml_path(str(model_path))
-    if (model.nq, model.nv) not in ((38, 37),(36,35)) or qpos.ndim != 2 or qpos.shape[1] != model.nq:
-        raise ValueError('Contact refinement requires matching DR02 31DOF or 29DOF qpos')
+    if (model.nq, model.nv, model.nu) not in ((38, 37, 31), (36, 35, 29)) or qpos.ndim != 2 or qpos.shape[1] != model.nq:
+        raise ValueError('Contact refinement requires 31/29-DoF DR02 qpos')
     if len(qpos) < 3 or not np.isfinite(qpos).all() or not np.isfinite(fps) or fps <= 0:
         raise ValueError('Expected at least three finite poses and positive fps')
     if not np.allclose(np.linalg.norm(qpos[:, 3:7], axis=1), 1., atol=1e-5):
@@ -216,14 +225,24 @@ def refine_payload(payload, source_dir, *, model_path=ROBOT_XML,
     if not np.isfinite(source_scale) or source_scale <= 0:
         raise ValueError('Source-to-robot surface scale must be finite and positive')
     source_heights = np.asarray(phases['foot_height'], dtype=np.float64) * source_scale
+    from .contact_sole import source_sole_targets
+    sole = source_sole_targets(points, support, phases['foot_height'], fps)
     corrected, projection, projection_arrays = project_contacts(
         model, qpos, fps, support, config=projection_config, confidence=confidence,
-        source_foot_heights_m=source_heights)
+        source_foot_heights_m=source_heights, source_sole=sole,
+        source_knee_flexion=source_metadata.get('leg_targets', {}).get('flexion'))
     if corrected.shape != qpos.shape or not np.isfinite(corrected).all():
         raise RuntimeError('Contact projection returned an invalid trajectory')
     from .resampling import qpos_velocities
     qvel = qpos_velocities(model, corrected, fps)
     flags = list(projection.get('quality_flags', []))
+    leg_fidelity = None
+    if 'leg_targets' in source_metadata:
+        from .soma_legs import fidelity_metrics
+        targets = {k: np.asarray(v) for k,v in source_metadata.pop('leg_targets').items()}
+        leg_fidelity = fidelity_metrics(model, corrected, targets)
+        flags.extend(leg_fidelity['quality_flags'])
+        projection_arrays.update(source_leg_directions=targets['directions'], source_knee_flexion=targets['flexion'])
     no_support = ~support.any(axis=1)
     flight = no_support & (np.asarray(phases['foot_height']).min(axis=1) > phase_config.enter_height)
     report = {
@@ -234,6 +253,7 @@ def refine_payload(payload, source_dir, *, model_path=ROBOT_XML,
         'support_frames_per_foot': support.sum(axis=0).tolist(),
         'flight_frames': int(flight.sum()), 'uncertain_no_support_frames': int((no_support & ~flight).sum()),
         'source_to_robot_height_scale': source_scale,
+        'source_leg_fidelity': leg_fidelity,
         'projection': projection, 'quality_flags': flags, 'accepted': not flags,
         'reference_summary': _reference_summary(corrected, qvel, projection),
         'robot_xml': str(model_path), 'robot_xml_sha256': sha256(model_path),

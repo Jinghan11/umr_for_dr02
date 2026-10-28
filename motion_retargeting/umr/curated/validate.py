@@ -81,8 +81,9 @@ def _stats(values):
             "max": float(values.max())}
 
 
-def validate_trajectory(path, *, model_path=ROBOT_XML, expected_frames=None, expected_original_frame_ids=None,
-                        expected_original_fps=None, output_dir=None, motion_row=None) -> dict:
+def validate_trajectory(path, *, expected_frames=None, expected_original_frame_ids=None,
+                        expected_original_fps=None, output_dir=None, motion_row=None,
+                        robot_xml=None, model_path=None) -> dict:
     """Validate completeness and measure every frame without repairing anything.
 
     Structural/nonfinite failures raise ValueError and cannot count as validated.
@@ -115,11 +116,17 @@ def validate_trajectory(path, *, model_path=ROBOT_XML, expected_frames=None, exp
         trajectory_record = {key: _scalar(packed, key) for key in
                              ("signature", "source_input_sha256", "smplx_model_sha256", "config_sha256",
                               "actor_gender", "fitted_gender", "shape_fit_method") if key in packed}
-    model = mujoco.MjModel.from_xml_path(str(model_path))
-    if (model.nq, model.nv, model.nu) not in ((38,37,31),(36,35,29)):
+    if robot_xml is not None and model_path is not None and Path(robot_xml).resolve() != Path(model_path).resolve():
+        raise ValueError('robot_xml and model_path must refer to the same model')
+    selected_model = robot_xml if robot_xml is not None else model_path
+    robot_xml = Path(selected_model).resolve() if selected_model is not None else ROBOT_XML
+    model = mujoco.MjModel.from_xml_path(str(robot_xml))
+    if (model.nq, model.nv, model.nu) not in ((38, 37, 31), (36, 35, 29)):
         raise ValueError("Official DR02 Pro dimensions changed")
+    if model.nu == 29 and any(model.joint(i).name in {'neck_z_joint', 'neck_y_joint'} for i in range(model.njnt)):
+        raise ValueError('29-DoF DR02 must have both neck joints fixed')
     if qpos.ndim != 2 or qpos.shape[1] != model.nq or not len(qpos):
-        raise ValueError(f"Expected nonempty qpos[T,38], found {qpos.shape}")
+        raise ValueError(f"Expected nonempty qpos[T,{model.nq}], found {qpos.shape}")
     frames = len(qpos)
     if expected_frames is not None and frames != int(expected_frames):
         raise ValueError(f"Incomplete trajectory: {frames} != {expected_frames}")
@@ -219,8 +226,8 @@ def validate_trajectory(path, *, model_path=ROBOT_XML, expected_frames=None, exp
               "collision_penetration_frames_over_1mm": int((penetration > .001001).sum()),
               "collision_penetration_frames_over_10mm": int((penetration > .010001).sum()),
               "foot_slip": foot_slip,
-              "qp_status_counts": solver_counts, "robot_xml": str(model_path),
-              "robot_xml_sha256": _sha256(model_path), "source": trajectory_record,
+              "qp_status_counts": solver_counts, "robot_xml": str(robot_xml),
+              "robot_xml_sha256": _sha256(robot_xml), "source": trajectory_record,
               "definitions": {"floor": "z=0; exact official collision primitive support points and collision mesh vertices",
                   "limits": "all official scalar joint ranges, including runtime-disabled limit constraints",
                   "quality_policy": "1e-5 quaternion/range tolerance; ground depths >1.001mm flagged",

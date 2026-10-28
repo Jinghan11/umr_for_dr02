@@ -46,6 +46,8 @@ def main():
                           help='Preserve source-informed foot contact after UMR/LQR (default: on)')
     retarget.add_argument('--revision29', choices=['baseline','roll2'])
     retarget.add_argument('--input-type', choices=['smplx','smpl_surface','soma'], default='smplx')
+    retarget.add_argument('--dof', type=int, choices=[29,31], default=31,
+                          help='DR02 joint layout (29 fixes the neck; currently SOMA only)')
     retarget.add_argument('--output', type=Path, help='Output root for prepared SMPL surface or SOMA BVH inputs')
     retarget.add_argument('--template', type=Path, help='Canonical template declared by prepared SMPL surfaces')
     validate = sub.add_parser('validate', help='Measure trajectory dimensions, limits and collision geometry')
@@ -86,6 +88,8 @@ def main():
         print(convert_sequence(source, args.output.resolve(), shape_record=shape, model_path=model,
                                target_fps=50.0, temp_root=work/'tmp'))
     elif args.command == 'retarget':
+        if args.dof == 29 and args.input_type != 'soma':
+            parser.error('--dof 29 currently requires --input-type soma')
         if args.input_type in ('smpl_surface', 'soma'):
             if args.device != 'cpu':
                 parser.error('SMPL surface and SOMA runs currently require --device cpu')
@@ -93,6 +97,7 @@ def main():
                        '--epochs', args.epochs, '--max-frames', args.max_frames, '--tag', args.tag,
                        '--ground-mode', args.ground_mode,
                        '--contact-refine' if args.contact_refine else '--no-contact-refine']
+            if args.input_type == 'soma': options += ['--dof', args.dof]
             if args.revision29:
                 if args.input_type != 'soma': parser.error('--revision29 requires SOMA')
                 options += ['--revision29', args.revision29]

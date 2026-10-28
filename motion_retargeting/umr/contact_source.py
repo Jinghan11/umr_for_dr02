@@ -205,6 +205,9 @@ def _soma_feet(path, frame_ids, max_frames, points_per_foot):
     import json
     from types import SimpleNamespace
     scripts = Path(__file__).resolve().parent / 'upstream/scripts'
+    method = scripts.parent.parent
+    if str(method) not in sys.path:
+        sys.path.insert(0, str(method))
     if str(scripts) not in sys.path:
         sys.path.insert(0, str(scripts))
     import soma_source
@@ -228,12 +231,20 @@ def _soma_feet(path, frame_ids, max_frames, points_per_foot):
     if any(not group for group in groups) or weights.shape[1] != len(names):
         raise ValueError('SOMA skinning weights and semantic foot joint names disagree')
     sole_ids, counts = _sole_vertex_ids(SimpleNamespace(shaped=shaped, weights=weights), points_per_foot, groups)
-    chunks = []
+    chunks, leg_chunks = [], []
+    leg_ids = [[names.index(side + part) for part in ('Leg', 'Shin', 'Foot')] for side in ('Left','Right')]
     for start in range(0, len(ids), 16):
-        vertices, _, _ = soma_source.soma_motion_vertices_joints(sequence, ids[start:start+16], batch_size=16)
+        vertices, joints, _ = soma_source.soma_motion_vertices_joints(sequence, ids[start:start+16], batch_size=16)
         chunks.append(source_points_to_retarget_frame(vertices[:, sole_ids], source_type='soma'))
+        leg_chunks.append(source_points_to_retarget_frame(joints[:, leg_ids], source_type='soma'))
     points = np.concatenate(chunks)
-    metadata = {'method': 'native_soma_mhr_sole_vertices', 'motion_path': str(path),
+    vectors = np.diff(np.concatenate(leg_chunks), axis=2)
+    lengths = np.linalg.norm(vectors, axis=-1, keepdims=True)
+    if not np.isfinite(vectors).all() or (lengths < .01).any():
+        raise ValueError('Invalid SOMA leg geometry')
+    directions = vectors / lengths
+    flexion = np.arccos(np.clip((directions[:,:,0]*directions[:,:,1]).sum(-1),-1,1))
+    metadata = {'leg_targets': {'directions': directions.tolist(), 'flexion': flexion.tolist()}, 'method': 'native_soma_mhr_sole_vertices', 'motion_path': str(path),
         'motion_sha256': _sha256(path), 'shape_params_path': sequence['soma_shape_params_path'],
         'shape_params_sha256': _sha256(Path(sequence['soma_shape_params_path'])),
         'shape_variant': sequence['soma_shape_variant'],
