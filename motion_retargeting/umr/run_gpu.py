@@ -17,6 +17,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ET
 from types import SimpleNamespace
 
 import mujoco
@@ -90,7 +91,139 @@ def _validate_reference_scene(robot_xml, scene):
             raise ValueError(f'Reference scene changed canonical robot {field}')
 
 
-def _robot_context(args):
+class PreparationIdentityReader:
+    """Reuse immutable file digests within one GPU batch, rechecking file stats."""
+    def __init__(self):
+        self._digests = {}
+        self._robot_contexts = {}
+
+    @staticmethod
+    def _stamp(path):
+        stat = path.stat()
+        return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+    def file_sha256(self, path):
+        path = Path(path).resolve()
+        before = self._stamp(path)
+        cached = self._digests.get(path)
+        if cached is not None and cached[0] == before:
+            return cached[1]
+        digest = common.file_sha256(path)
+        if self._stamp(path) != before:
+            raise RuntimeError(f'Preparation input changed while hashing: {path}')
+        self._digests[path] = (before, digest)
+        return digest
+
+    def file_identity(self, path):
+        path = Path(path).resolve()
+        return {'path': str(path), 'sha256': self.file_sha256(path)}
+
+    def algorithm_identity(self):
+        # Exact same manifest as the CPU entry point; additions are enumerated
+        # on every request rather than hidden behind a cached directory key.
+        paths = [METHOD / name for name in ('run.py', 'resampling.py',
+            'smpl_surface_adapter.py', 'requirements.lock.txt')]
+        paths += [common.UPSTREAM / name for name in
+                  ('humanoid_retarget_defaults.json', 'requirements-umr.txt')]
+        paths.extend(common.UPSTREAM.rglob('*.py'))
+        return common.json_sha256({str(path.relative_to(METHOD)): self.file_sha256(path)
+                                   for path in sorted(set(paths))})
+
+    def robot_identity(self, xml):
+        directory = Path(xml).parent
+        return common.json_sha256({str(path.relative_to(directory)): self.file_sha256(path)
+            for path in sorted(directory.rglob('*')) if path.is_file()
+            and '.git' not in path.relative_to(directory).parts})
+
+    def _model_dependencies(self, path):
+        """Enumerate XML includes and all external assets on every request.
+
+        Included MJCF can supply compiler directories for another document.
+        Conservatively include every existing resolution against the main and
+        defining XML directories, rather than guessing which asset is used.
+        Unsupported resource mechanisms retain the original compile/validate
+        path; they never create a cache entry based on incomplete identities.
+        """
+        main = Path(path).resolve()
+        pending = [main]
+        documents = {}
+        try:
+            while pending:
+                current = pending.pop()
+                if current in documents:
+                    continue
+                root = ET.parse(current).getroot()
+                if root.tag not in {'mujoco', 'mujocoinclude'}:
+                    return None
+                if any(node.tag in {'plugin', 'model'} for node in root.iter()):
+                    return None
+                documents[current] = root
+                for node in root.iter('include'):
+                    name = node.get('file')
+                    if not name or '://' in name:
+                        return None
+                    candidates = {Path(name)} if Path(name).is_absolute() else {
+                        current.parent / name, main.parent / name}
+                    existing = {candidate.resolve() for candidate in candidates if candidate.is_file()}
+                    if not existing:
+                        return None
+                    pending.extend(existing)
+            directories = {main.parent, *(item.parent for item in documents)}
+            prefixes = {'mesh': {''}, 'texture': {''}, 'other': {''}}
+            strip_path = False
+            for root in documents.values():
+                for compiler in root.iter('compiler'):
+                    assetdir = compiler.get('assetdir', '')
+                    prefixes['mesh'].add(compiler.get('meshdir', assetdir))
+                    prefixes['texture'].add(compiler.get('texturedir', assetdir))
+                    strip_path |= compiler.get('strippath', 'false').lower() == 'true'
+            found = set(documents)
+            for root in documents.values():
+                for node in root.iter():
+                    if node.tag == 'include':
+                        continue
+                    for attribute, name in node.attrib.items():
+                        if not (attribute == 'file' or (node.tag == 'texture' and attribute.startswith('file'))):
+                            continue
+                        if not name or '://' in name:
+                            return None
+                        if node.tag not in {'mesh', 'texture'}:
+                            # Other resource tags can have distinct compiler
+                            # directory rules. Do not cache a partial manifest.
+                            return None
+                        value = Path(name)
+                        candidates = {value} if value.is_absolute() else set()
+                        names = {value.name, name} if strip_path else {name}
+                        for directory in directories:
+                            for prefix in prefixes.get(node.tag, prefixes['other']):
+                                candidates.update(directory / prefix / item for item in names)
+                        existing = {candidate.resolve() for candidate in candidates if candidate.is_file()}
+                        if not existing:
+                            return None
+                        found.update(existing)
+            return found
+        except (OSError, ET.ParseError):
+            return None
+
+    def robot_context_key(self, robot_xml, scene, reference_config, revision):
+        dependencies = set()
+        for path in (ROBOT_XML, robot_xml, scene):
+            found = self._model_dependencies(path)
+            if found is None:
+                return None
+            dependencies.update(found)
+        return common.json_sha256({
+            'schema': 'verified_robot_context_v1',
+            'models': [str(Path(path).resolve()) for path in (ROBOT_XML, robot_xml, scene)],
+            'dependencies': {str(path): self.file_sha256(path) for path in sorted(dependencies)},
+            'reference_config': reference_config, 'revision': revision,
+            'validator_sha256': self.file_sha256(Path(__file__)),
+            'runtime': {'mujoco': mujoco.__version__, 'numpy': np.__version__,
+                        'python': sys.version},
+        })
+
+
+def _robot_context(args, identity_reader=common):
     """Read existing reference assets, or build isolated derived robot assets."""
     settings = SimpleNamespace(iters=15, pose_init_iters=60, ground_mode='mujoco_collision',
                                ground_margin=.005, trajectory_filter='lqr', step_size=.05)
@@ -98,12 +231,13 @@ def _robot_context(args):
     revision = None
     robot_xml = ROBOT_XML
     reference_config = None
+    context_key = None
     if getattr(args, 'revision29', None):
         from motion_retargeting.umr import revision29
         revision = {'version': revision29.VERSION,
                     'roll_multiplier': 2. if args.revision29 == 'roll2' else 1.,
                     'neutral_cost': revision29.NEUTRAL_COST,
-                    'code_sha256': common.file_sha256(Path(revision29.__file__)),
+                    'code_sha256': identity_reader.file_sha256(Path(revision29.__file__)),
                     'effort_implemented': False}
         if reference:
             reference_config = json.loads(Path(reference).read_text())
@@ -114,7 +248,7 @@ def _robot_context(args):
                 raise ValueError('Reference must explicitly remove every head target')
             cache = Path(reference_config['correspondence']['train']['out_dir']).resolve().parent
             marker = json.loads((cache / 'identity.json').read_text())
-            if not verified_correspondence(cache, marker['canonical']):
+            if not verified_correspondence(cache, marker['canonical'], identity_reader):
                 raise ValueError('Reference correspondence identity/artifacts are invalid')
             dataset = Path(reference_config['correspondence']['dataset']['out']).resolve()
             if dataset != cache / 'dataset.npz':
@@ -122,8 +256,14 @@ def _robot_context(args):
             digest = marker['canonical']['robot']['model_xml']
             scene = Path(reference_config['robot']['xml']).resolve()
             robot_xml = scene.parent / ('robot_' + digest[:16] + '.xml')
-            if not robot_xml.is_file() or common.file_sha256(robot_xml) != digest:
+            if not robot_xml.is_file() or identity_reader.file_sha256(robot_xml) != digest:
                 raise ValueError('Reference is missing its exact canonical 29DOF robot model')
+            if isinstance(identity_reader, PreparationIdentityReader):
+                context_key = identity_reader.robot_context_key(robot_xml, scene, reference_config, revision)
+                if context_key is not None and context_key in identity_reader._robot_contexts:
+                    # Every request above still validates the reference marker,
+                    # correspondence, revision and complete model dependencies.
+                    return copy.deepcopy(identity_reader._robot_contexts[context_key])
             _validate_reference_scene(robot_xml, scene)
         else:
             robot_xml, scene = revision29.build_model(
@@ -140,25 +280,32 @@ def _robot_context(args):
         robot.update(xml=str(robot_xml), name=revision29.VERSION,
                      tpose_qpos={name: value for name, value in robot['tpose_qpos'].items()
                                  if name not in revision29.NECK})
-    return robot_xml, scene, revision, robot, settings, reference_config
+    context = (robot_xml, scene, revision, robot, settings, reference_config)
+    if context_key is not None:
+        if identity_reader.robot_context_key(robot_xml, scene, reference_config, revision) != context_key:
+            raise RuntimeError('Robot validation dependencies changed while compiling')
+        identity_reader._robot_contexts[context_key] = copy.deepcopy(context)
+        while len(identity_reader._robot_contexts) > 8:
+            identity_reader._robot_contexts.pop(next(iter(identity_reader._robot_contexts)))
+    return context
 
 
-def verified_correspondence(cache, canonical):
+def verified_correspondence(cache, canonical, identity_reader=common):
     artifacts = [cache / 'dataset.npz', cache / 'train/correspondence_slots_final.npz']
     marker = cache / 'identity.json'
     if not marker.is_file() or not all(p.is_file() for p in artifacts):
         return False
     try:
         return json.loads(marker.read_text()) == {
-            'canonical': canonical, 'sha256': {str(p): common.file_sha256(p) for p in artifacts}}
+            'canonical': canonical, 'sha256': {str(p): identity_reader.file_sha256(p) for p in artifacts}}
     except (ValueError, OSError):
         return False
 
 
-def prepare(raw_path, args, output):
+def prepare(raw_path, args, output, *, identity_reader=common):
     """Prepare the original source and reuse only verified UMR correspondence."""
     import soma_source
-    robot_xml, scene, revision, robot, settings, reference_config = _robot_context(args)
+    robot_xml, scene, revision, robot, settings, reference_config = _robot_context(args, identity_reader)
     raw_path = raw_path.resolve()
     source_root = next(p for p in raw_path.parents
                        if (p / 'shapes').is_dir() and (p / 'soma_assets').is_dir())
@@ -169,8 +316,8 @@ def prepare(raw_path, args, output):
     if not soma_source.is_boneseed_sequence(raw):
         raise ValueError('Matching BONES-SEED MHR shape parameters are required')
     assets = Path(raw['soma_assets_path'])
-    raw_identity = {'source': common.file_identity(raw_path),
-                    'resampler': common.file_sha256(METHOD / 'resampling.py')}
+    raw_identity = {'source': identity_reader.file_identity(raw_path),
+                    'resampler': identity_reader.file_sha256(METHOD / 'resampling.py')}
     # Separate source cache avoids races with active production preparation.
     prepared = ROOT / 'artifacts/soma_gpu/sources' / common.json_sha256(raw_identity)[:16]
     prepared.mkdir(parents=True, exist_ok=True)
@@ -206,17 +353,17 @@ def prepare(raw_path, args, output):
     primary = [assets / name for name in ('SOMA_neutral.npz', 'SOMA_template_rig.usda',
                                          'SOMA_procedural_transforms.json', 'MHR/mhr_model_lod1.pt')]
     canonical = {
-        'actual_wrap_assets': ({p.name: common.file_sha256(p) for p in sorted(label_root.iterdir())
+        'actual_wrap_assets': ({p.name: identity_reader.file_sha256(p) for p in sorted(label_root.iterdir())
                                 if p.is_file()} if label_root else None),
-        'label_config': common.file_identity(label_config) if label_config else None,
-        'shape': common.file_identity(Path(raw['soma_shape_params_path'])),
-        'assets': {str(p.relative_to(assets)): common.file_sha256(p) for p in primary},
-        'label_assets': {str(p.relative_to(assets)): common.file_sha256(p)
+        'label_config': identity_reader.file_identity(label_config) if label_config else None,
+        'shape': identity_reader.file_identity(Path(raw['soma_shape_params_path'])),
+        'assets': {str(p.relative_to(assets)): identity_reader.file_sha256(p) for p in primary},
+        'label_assets': {str(p.relative_to(assets)): identity_reader.file_sha256(p)
                          for p in sorted(assets.rglob('*')) if p.is_file() and p not in primary},
-        'skeleton_usd': common.file_identity(usd), 'segmentation': common.file_identity(segmentation),
-        'points': args.points, 'epochs': args.epochs, 'algorithm': common.algorithm_identity(),
-        'robot': {'official_assets': common.robot_identity(ROBOT_XML),
-                  'model_xml': common.file_sha256(robot_xml)},
+        'skeleton_usd': identity_reader.file_identity(usd), 'segmentation': identity_reader.file_identity(segmentation),
+        'points': args.points, 'epochs': args.epochs, 'algorithm': identity_reader.algorithm_identity(),
+        'robot': {'official_assets': identity_reader.robot_identity(ROBOT_XML),
+                  'model_xml': identity_reader.file_sha256(robot_xml)},
         'soma_template': raw['soma_template_name'],
         'revision': ({'version': revision['version'], 'code_sha256': revision['code_sha256'],
                       'head_targets': 0} if revision else None),
@@ -233,7 +380,7 @@ def prepare(raw_path, args, output):
         # The saved canonical paths identify the original CPU reference; record
         # the actual relocated source assets independently in this run identity.
         canonical = saved_canonical
-    shared_valid = verified_correspondence(cache, canonical)
+    shared_valid = verified_correspondence(cache, canonical, identity_reader)
     if reference_config and not shared_valid:
         raise ValueError('Reference correspondence cannot be reused exactly')
     if not shared_valid:
@@ -271,7 +418,7 @@ def prepare(raw_path, args, output):
         fcntl.flock(lock, fcntl.LOCK_EX)
         artifacts = [cache / 'dataset.npz', cache / 'train/correspondence_slots_final.npz']
         marker = cache / 'identity.json'
-        valid = verified_correspondence(cache, canonical)
+        valid = verified_correspondence(cache, canonical, identity_reader)
         if shared_valid and not valid:
             raise RuntimeError('Shared correspondence changed while preparing; retry in a new output')
         if not valid:
@@ -285,8 +432,8 @@ def prepare(raw_path, args, output):
                                     '--force-' + stage, '--skip-view'], cwd=ROOT, env=env,
                                    stdout=log, stderr=subprocess.STDOUT, check=True)
             common.atomic_json(marker, {'canonical': canonical,
-                                        'sha256': {str(p): common.file_sha256(p) for p in artifacts}})
-    scene_sha = common.file_sha256(scene)
+                                        'sha256': {str(p): identity_reader.file_sha256(p) for p in artifacts}})
+    scene_sha = identity_reader.file_sha256(scene)
     folder = output / raw_path.stem
     folder.mkdir(parents=True, exist_ok=True)
     config['robot']['xml'] = str(scene)
@@ -301,13 +448,13 @@ def prepare(raw_path, args, output):
     config_path = folder / 'config.json'
     identity = {'canonical': canonical, 'source': raw_identity, 'config': config, 'solver_scene': scene_sha,
                 'method_id': method_id(args), 'revision': revision,
-                'reference_config': common.file_identity(args.reference_config)
+                'reference_config': identity_reader.file_identity(args.reference_config)
                     if getattr(args, 'reference_config', None) else None,
                 'source_python_launcher': str(Path(os.path.abspath(os.fspath(args.source_python))))
                     if getattr(args, 'source_python', None) else sys.executable,
                 'optimizer': {'device': args.device, 'iterations': args.iterations,
                     'learning_rate': args.learning_rate, 'batch_frames': args.batch_frames},
-                'implementation': {name: common.file_sha256(METHOD / name)
+                'implementation': {name: identity_reader.file_sha256(METHOD / name)
                                    for name in ('run_gpu.py', 'gpu_pipeline.py', 'gpu_solver.py', 'gpu_collision.py',
                                                 'gpu_contact_guard.py')}}
     return dict(folder=folder, path=path, raw_path=raw_path, ids=ids, clock=clock, config=config,

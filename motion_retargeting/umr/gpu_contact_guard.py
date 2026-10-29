@@ -111,13 +111,106 @@ def _archive_original(folder):
     return identities
 
 
-def apply_contact_guard(folder, projector):
+def _apply_contact_guard_unverified(folder, projector):
+    """Publish the projected contact candidate without independent certification.
+
+    Collision projection still uses its configured geometry, constraints and
+    root/foot locks. No separate before/after geometry or foot-invariant
+    comparison is performed; the returned result is explicitly unverified.
+    """
+    started = time.monotonic()
+    folder = Path(folder)
+    model = projector.model
+    locks = foot_ancestor_joint_ids(model)
+    locked = _qpos_addresses(model, locks)
+    if (tuple(projector.locked_joint_ids) != locks
+            or not np.array_equal(projector.locked_qpos_addresses, locked)):
+        raise ValueError('Contact guard requires every root and foot-ancestor coordinate to be locked')
+    report = json.loads((folder / 'contact_report.json').read_text())
+    with np.load(folder / 'trajectory.npz', allow_pickle=False) as packed:
+        payload = {name: packed[name].copy() for name in packed.files}
+    original = np.asarray(payload['qpos'], dtype=np.float64)
+    fps = float(np.asarray(payload['fps']).reshape(-1)[0])
+    if original.ndim != 2 or original.shape[1] != model.nq or not len(original):
+        raise ValueError('Contact guard requires a nonempty full-frame trajectory')
+    if not np.isfinite(original).all() or not np.isfinite(fps) or fps <= 0:
+        raise ValueError('Contact guard requires finite poses and a positive frame rate')
+
+    original_hashes = _archive_original(folder)
+    projected = projector.project_trajectory(original, strict=False)
+    candidate = np.asarray(projected.qpos, dtype=np.float64)
+    if candidate.shape != original.shape or not np.isfinite(candidate).all():
+        raise ValueError('Contact guard returned an invalid candidate trajectory')
+    qvel = qpos_velocities(model, candidate, fps)
+    guard = {
+        'schema': VERSION, 'status': 'completed_unverified',
+        'independent_certification': False, 'passed': None,
+        'applied': True, 'published': True,
+        'frames': len(original), 'fps': fps,
+        'original_contact_accepted': report.get('accepted'),
+        'original_quality_flags': list(report.get('quality_flags', [])),
+        'locked_joint_ids': list(locks),
+        'locked_joint_names': [model.joint(j).name for j in locks],
+        'locked_qpos_addresses': locked.tolist(),
+        'projection': projected.report,
+        'original_files_sha256': original_hashes,
+        'modified_frames': np.flatnonzero(np.any(candidate != original, axis=1)).tolist(),
+        'contact_diagnostics_scope': 'pre_guard_original_trajectory',
+        'before': None, 'after': None,
+        'wall_seconds': time.monotonic() - started,
+        'algorithm_sha256': {Path(__file__).name: contact.sha256(__file__),
+                             'gpu_collision.py': contact.sha256(Path(__file__).with_name('gpu_collision.py'))},
+    }
+    updated = copy.deepcopy(report)
+    updated.pop('trajectory_sha256', None)
+    updated.update(schema=COMBINED_METHOD, original_contact_schema=report.get('schema'),
+                   accepted=None, independent_certification=False,
+                   acceptance_status='not_assessed', reference_summary=None,
+                   contact_diagnostics_scope='pre_guard_original_trajectory')
+    updated['quality_flags'] = list(report.get('quality_flags', []))
+    projection = updated.setdefault('projection', {})
+    projection['original_method'] = projection.get('method')
+    projection['method'] = COMBINED_METHOD
+    projection['accepted'] = None
+    projection['independent_certification'] = False
+    projection['minimum_collision_height_after_m'] = None
+    projection['max_joint_limit_violation_rad'] = None
+    projection['quality_flags'] = list(projection.get('quality_flags', []))
+    updated['wall_seconds'] = float(report.get('wall_seconds', 0.)) + guard['wall_seconds']
+    updated['combined_algorithm_sha256'] = dict(report.get('algorithm_sha256', {}), **guard['algorithm_sha256'])
+    updated['post_contact_guard'] = copy.deepcopy(guard)
+    result = {name: value.copy() for name, value in payload.items()}
+    result.update(qpos=candidate, qvel=qvel, root_pos=candidate[:, :3], root_quat_wxyz=candidate[:, 3:7],
+        method_id=np.asarray(COMBINED_METHOD), contact_refinement_json=np.asarray(json.dumps(
+            updated, default=contact._json_default, allow_nan=False)))
+    attempt = folder / 'post_contact_guard_attempt'
+    attempt.mkdir(exist_ok=False)
+    contact._atomic_npz(attempt / 'trajectory.npz', result)
+    # The original contact diagnostics refer to the pre-guard trajectory. Keep
+    # their exact bytes and disclose their scope instead of inventing values.
+    shutil.copyfile(folder / 'contact_diagnostics.npz', attempt / 'contact_diagnostics.npz')
+    updated['trajectory_sha256'] = contact.sha256(attempt / 'trajectory.npz')
+    contact._atomic_json(attempt / 'contact_report.json', updated)
+    for name in ('contact_diagnostics.npz', 'contact_report.json', 'trajectory.npz'):
+        temporary = folder / ('.guard.' + name)
+        shutil.copyfile(attempt / name, temporary)
+        temporary.replace(folder / name)
+    guard['trajectory_sha256'] = contact.sha256(folder / 'trajectory.npz')
+    contact._atomic_json(folder / 'post_contact_guard_report.json', guard)
+    return updated, guard
+
+
+def apply_contact_guard(folder, projector, *, independent_certification=True):
     """Return (contact report, guard report), publishing only a proved repair.
 
     A no-op leaves all three original artifact bytes unchanged.  Failed repairs
     remain in ``post_contact_guard_attempt`` and never replace the original.
     Original contact rejection and every original quality flag are preserved.
+    Set independent_certification=False to publish a labeled unverified candidate
+    without a separate before/after trajectory or foot-invariant assessment.
     """
+    if not independent_certification:
+        return _apply_contact_guard_unverified(folder, projector)
     started = time.monotonic()
     folder = Path(folder)
     model = projector.model

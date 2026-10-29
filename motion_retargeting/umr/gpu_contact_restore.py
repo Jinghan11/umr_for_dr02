@@ -224,7 +224,8 @@ def _feasibility_polish(batch, x, iterations=12):
 
 
 def restore_frames_accelerated(model, requests, *, device='cuda', max_sqp_iterations=30,
-                               max_admm_iterations=256, admm_tolerance=1e-8, rho=100.):
+                               max_admm_iterations=256, admm_tolerance=1e-8, rho=100.,
+                               independent_certification=True):
     """Restore independent frames in one device batch with per-frame CPU fallback.
 
     Each request is a dictionary of the positional and keyword inputs accepted
@@ -277,13 +278,41 @@ def restore_frames_accelerated(model, requests, *, device='cuda', max_sqp_iterat
                 reason='line_search_stalled' if admm_ok else 'qp_not_converged'; break
         x = _feasibility_polish(batch, x)
         changes=x.detach().cpu().numpy(); output=[]
-        for prep,change in zip(batch.prepared,changes):
-            corrected,verified,eqerr,ineqerr,bounderr=_verify(model,prep,batch.geometry,change)
+        if not independent_certification:
+            # These are the GPU solver's own feasibility measures, not a
+            # separate MuJoCo certification of the returned frame.
+            current=batch.evaluate(x)
+            prior=batch.evaluate(batch.candidate_change)
+            device_eq=current[0].detach().cpu().numpy()
+            device_ineq=current[2].detach().cpu().numpy()
+            device_cost=current[4].detach().cpu().numpy()
+            prior_eq=prior[0].detach().cpu().numpy()
+            prior_ineq=prior[2].detach().cpu().numpy()
+        for index,(prep,change) in enumerate(zip(batch.prepared,changes)):
+            if independent_certification:
+                corrected,verified,eqerr,ineqerr,bounderr=_verify(model,prep,batch.geometry,change)
+            else:
+                corrected=prep.baseline.copy()
+                corrected[batch.addresses]+=change
+                eqerr=float(np.max(np.abs(device_eq[index]),initial=0.))
+                ineqerr=float(max(0.,-np.min(device_ineq[index],initial=0.)))
+                bounderr=float(max(0.,np.max(prep.lo-change),np.max(change-prep.hi)))
+                verified=bool(np.isfinite(change).all() and eqerr<=1e-7 and ineqerr<=1e-8 and bounderr<=1e-10)
             if verified:
-                before=_verify(model,prep,batch.geometry,prep.candidate[batch.addresses]-prep.baseline[batch.addresses])
+                if independent_certification:
+                    before=_verify(model,prep,batch.geometry,prep.candidate[batch.addresses]-prep.baseline[batch.addresses])
+                    objective=float(batch.evaluate(x)[4][index].item())
+                else:
+                    before=(None,None,float(np.max(np.abs(prior_eq[index]),initial=0.)),
+                            float(max(0.,-np.min(prior_ineq[index],initial=0.))))
+                    objective=float(device_cost[index])
                 report={'success':True,'feasible':True,'optimizer_success':reason=='device_feasible',
-                    'reason':'verified_strict_geometry','optimizer_status':0,'message':reason,'iterations':iterations,
-                    'objective':float(batch.evaluate(x)[4][len(output)].item()),
+                    'reason':('verified_strict_geometry' if independent_certification else 'device_feasible_uncertified'),
+                    'optimizer_status':0,'message':reason,'iterations':iterations,
+                    'independent_certification':bool(independent_certification),
+                    'independent_geometry_passed':True if independent_certification else None,
+                    'feasibility_metric_source':'mujoco' if independent_certification else 'torch_device',
+                    'objective':objective,
                     'max_material_xyz_error_m':eqerr,'max_inequality_violation_m':ineqerr,'max_bound_violation':bounderr,
                     'before_max_material_xyz_error_m':before[2],'before_max_inequality_violation_m':before[3],
                     'max_root_restoration_m':float(np.max(np.abs(corrected[:3]-prep.candidate[:3]))),
@@ -293,8 +322,11 @@ def restore_frames_accelerated(model, requests, *, device='cuda', max_sqp_iterat
                     'returned_candidate_unchanged':False,'backend':'torch_batched_sqp','cpu_fallback':False}
             else:
                 corrected,report=_cpu_call(model,prep.request)
+                check_label=('independent MuJoCo verification' if independent_certification else 'device solver feasibility')
                 report=dict(report,backend='scipy_cpu',cpu_fallback=True,
-                            fallback_reason=f'device candidate failed independent MuJoCo verification: eq={eqerr:g}, ineq={ineqerr:g}, bounds={bounderr:g}; {reason}')
+                            independent_certification=bool(independent_certification),
+                            independent_geometry_passed=None if not independent_certification else False,
+                            fallback_reason=f'device candidate failed {check_label}: eq={eqerr:g}, ineq={ineqerr:g}, bounds={bounderr:g}; {reason}')
             output.append((corrected,report))
         return output
     except Exception as exc:
@@ -302,10 +334,14 @@ def restore_frames_accelerated(model, requests, *, device='cuda', max_sqp_iterat
         for req in requests:
             corrected,report=_cpu_call(model,req)
             output.append((corrected,dict(report,backend='scipy_cpu',cpu_fallback=True,
+                independent_certification=bool(independent_certification),
+                independent_geometry_passed=None if not independent_certification else False,
                 fallback_reason=f'{type(exc).__name__}: {exc}')))
         return output
 
 
-def restore_frame_accelerated(model,qpos,foot_geom_ids,local_points,support,anchors,*,device='cuda',**kwargs):
+def restore_frame_accelerated(model,qpos,foot_geom_ids,local_points,support,anchors,*,device='cuda',
+                              independent_certification=True,**kwargs):
     request=dict(qpos=qpos,foot_geom_ids=foot_geom_ids,local_points=local_points,support=support,anchors=anchors,**kwargs)
-    return restore_frames_accelerated(model,[request],device=device)[0]
+    return restore_frames_accelerated(model,[request],device=device,
+                                      independent_certification=independent_certification)[0]

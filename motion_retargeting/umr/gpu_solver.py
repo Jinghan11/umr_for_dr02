@@ -92,7 +92,7 @@ class TorchRobot:
     multiple joints per body are retained. Ball joints, mocap bodies, flexes and
     equality constraints are rejected rather than silently approximated.
     """
-    def __init__(self, xml: str | Path | mujoco.MjModel, *, device="auto", dtype="float32"):
+    def __init__(self, xml: str | Path | mujoco.MjModel, *, device="auto", dtype="float32", fk_mode="auto"):
         self.model = xml if isinstance(xml, mujoco.MjModel) else mujoco.MjModel.from_xml_path(str(Path(xml).expanduser().resolve()))
         self.device = resolve_device(device)
         self.dtype = getattr(torch, dtype) if isinstance(dtype, str) else dtype
@@ -129,12 +129,149 @@ class TorchRobot:
             if m.jnt_limited[j] and m.jnt_type[j] != mujoco.mjtJoint.mjJNT_FREE:
                 lower[m.jnt_qposadr[j]], upper[m.jnt_qposadr[j]] = m.jnt_range[j]
         self.lower, self.upper = self.tensor(lower), self.tensor(upper)
+        if fk_mode not in ("serial", "level", "auto"):
+            raise ValueError("fk_mode must be serial, level or auto")
+        self.fk_mode = fk_mode
+        self._level_plan = self._build_level_plan()
+        self.fk_level_compatible = self._level_plan is not None
 
     def tensor(self, value, *, integer=False):
         return torch.as_tensor(np.asarray(value), dtype=torch.long if integer else self.dtype, device=self.device)
 
-    def fk(self, qpos: torch.Tensor) -> dict[str, torch.Tensor]:
-        """Return body transforms and joint axes/anchors for (..., nq) tensors."""
+    def _build_level_plan(self):
+        """Static single-joint body groups; arbitrary multi-joint models fall back."""
+        if any(len(joints) > 1 for joints in self.body_joints):
+            return None
+        depth = [0] * self.nbody
+        for body in range(1, self.nbody):
+            depth[body] = depth[self.parents[body]] + 1
+        hinge = [joint for joint, kind in enumerate(self.joint_types)
+                 if kind == mujoco.mjtJoint.mjJNT_HINGE]
+        slide = [joint for joint, kind in enumerate(self.joint_types)
+                 if kind == mujoco.mjtJoint.mjJNT_SLIDE]
+        hinge_lookup, slide_lookup = ({joint: index for index, joint in enumerate(joints)}
+                                      for joints in (hinge, slide))
+        hinge_ids, slide_ids = self.tensor(hinge, integer=True), self.tensor(slide, integer=True)
+        hinge_q = self.tensor([self.joint_addresses[joint] for joint in hinge], integer=True)
+        slide_q = self.tensor([self.joint_addresses[joint] for joint in slide], integer=True)
+        levels, body_order, joint_order, previous = [], [0], [], {0: 0}
+        for height in range(1, max(depth, default=0) + 1):
+            bodies = [body for body in range(1, self.nbody) if depth[body] == height]
+            ids = self.tensor(bodies, integer=True)
+            level = dict(parents=self.tensor([previous[self.parents[body]] for body in bodies], integer=True),
+                         positions=self.body_positions.index_select(0, ids),
+                         rotations=self.body_rotations.index_select(0, ids))
+            for name, kind, lookup in (("free", mujoco.mjtJoint.mjJNT_FREE, None),
+                                       ("hinge", mujoco.mjtJoint.mjJNT_HINGE, hinge_lookup),
+                                       ("slide", mujoco.mjtJoint.mjJNT_SLIDE, slide_lookup)):
+                selected = [(index, self.body_joints[body][0]) for index, body in enumerate(bodies)
+                            if self.body_joints[body] and self.joint_types[self.body_joints[body][0]] == kind]
+                if not selected:
+                    level[name] = None
+                    continue
+                local, joints = zip(*selected)
+                jids = self.tensor(joints, integer=True)
+                group = dict(indices=self.tensor(local, integer=True), covers_level=len(selected) == len(bodies),
+                             axes=self.joint_axes.index_select(0, jids),
+                             anchors=self.joint_positions.index_select(0, jids))
+                if name == "free":
+                    group['address'] = self.joint_addresses[joints[0]]
+                else:
+                    group['angle_indices'] = self.tensor([lookup[joint] for joint in joints], integer=True)
+                level[name] = group
+                joint_order.extend(joints)
+            levels.append(level)
+            body_order.extend(bodies)
+            previous = {body: index for index, body in enumerate(bodies)}
+        return dict(levels=levels, body_order=self.tensor(np.argsort(body_order), integer=True),
+                    joint_order=self.tensor(np.argsort(joint_order), integer=True),
+                    hinge_q=hinge_q, hinge_reference=self.qpos0.index_select(0, hinge_q),
+                    hinge_outer=self.axis_outer.index_select(0, hinge_ids),
+                    hinge_skew=self.axis_skews.index_select(0, hinge_ids),
+                    slide_q=slide_q, slide_reference=self.qpos0.index_select(0, slide_q))
+
+    def fk(self, qpos: torch.Tensor, *, mode=None) -> dict[str, torch.Tensor]:
+        """Return transforms for (..., nq), optionally batching bodies by depth.
+
+        ``auto`` batches bodies by depth on CUDA when every body has at most
+        one joint; CPU and multi-joint models retain the serial implementation.
+        ``level`` explicitly selects depth batching for compatible models. Layer tensors are never mutated
+        after use, preserving autograd through parent-child transformations.
+        """
+        if qpos.ndim < 1 or qpos.shape[-1] != self.nq:
+            raise ValueError(f"qpos must end in nq={self.nq}, got {tuple(qpos.shape)}")
+        selected = self.fk_mode if mode is None else mode
+        if selected not in ("serial", "level", "auto"):
+            raise ValueError("FK mode must be serial, level or auto")
+        if selected == "auto":
+            selected = "level" if self.device.type == "cuda" else "serial"
+        if selected == "level" and self._level_plan is not None:
+            return self._fk_levels(qpos)
+        return self._fk_serial(qpos)
+
+    def _fk_levels(self, qpos):
+        plan, shape = self._level_plan, qpos.shape[:-1]
+        positions = [qpos.new_zeros(shape + (1, 3))]
+        rotations = [self.identity.expand(shape + (1, 3, 3))]
+        axes, anchors = [], []
+        hinge_angle = qpos.index_select(-1, plan['hinge_q']) - plan['hinge_reference']
+        cosine, sine = hinge_angle.cos()[..., None, None], hinge_angle.sin()[..., None, None]
+        hinge_rotation = (cosine * self.identity + (1 - cosine) * plan['hinge_outer']
+                          + sine * plan['hinge_skew'])
+        slide_angle = qpos.index_select(-1, plan['slide_q']) - plan['slide_reference']
+        for level in plan['levels']:
+            group = level['free']
+            if group is not None and group['covers_level']:
+                address = group['address']
+                root_position = qpos[..., address:address + 3].unsqueeze(-2)
+                positions.append(root_position)
+                rotations.append(quaternion_matrix(qpos[..., address + 3:address + 7]).unsqueeze(-3))
+                axes.append(group['axes'].expand(shape + group['axes'].shape))
+                anchors.append(root_position)
+                continue
+            parent_position = positions[-1].index_select(-2, level['parents'])
+            parent_rotation = rotations[-1].index_select(-3, level['parents'])
+            bp = parent_position + (parent_rotation @ level['positions'][..., None]).squeeze(-1)
+            br = parent_rotation @ level['rotations']
+            group = level['free']
+            if group is not None:
+                address = group['address']
+                root_position = qpos[..., address:address + 3].unsqueeze(-2)
+                root_rotation = quaternion_matrix(qpos[..., address + 3:address + 7]).unsqueeze(-3)
+                bp = bp.index_copy(-2, group['indices'], root_position)
+                br = br.index_copy(-3, group['indices'], root_rotation)
+                axes.append(group['axes'].expand(shape + group['axes'].shape))
+                anchors.append(root_position)
+            for name in ('hinge', 'slide'):
+                group = level[name]
+                if group is None:
+                    continue
+                selected_position = bp if group['covers_level'] else bp.index_select(-2, group['indices'])
+                selected_rotation = br if group['covers_level'] else br.index_select(-3, group['indices'])
+                axis = (selected_rotation @ group['axes'][..., None]).squeeze(-1)
+                anchor = selected_position + (selected_rotation @ group['anchors'][..., None]).squeeze(-1)
+                axes.append(axis)
+                anchors.append(anchor)
+                if name == 'slide':
+                    amount = slide_angle.index_select(-1, group['angle_indices'])
+                    updated_position = selected_position + amount[..., None] * axis
+                else:
+                    rotation = hinge_rotation.index_select(-3, group['angle_indices'])
+                    updated_rotation = selected_rotation @ rotation
+                    updated_position = anchor - (updated_rotation @ group['anchors'][..., None]).squeeze(-1)
+                    br = updated_rotation if group['covers_level'] else br.index_copy(-3, group['indices'], updated_rotation)
+                bp = updated_position if group['covers_level'] else bp.index_copy(-2, group['indices'], updated_position)
+            positions.append(bp)
+            rotations.append(br)
+        return dict(body_pos=torch.cat(positions, -2).index_select(-2, plan['body_order']),
+                    body_rot=torch.cat(rotations, -3).index_select(-3, plan['body_order']),
+                    joint_world_axes=(torch.cat(axes, -2).index_select(-2, plan['joint_order'])
+                                      if axes else qpos.new_empty(shape + (0, 3))),
+                    joint_world_anchors=(torch.cat(anchors, -2).index_select(-2, plan['joint_order'])
+                                         if anchors else qpos.new_empty(shape + (0, 3))))
+
+    def _fk_serial(self, qpos: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Original general FK implementation, retained as the reference path."""
         if qpos.ndim < 1 or qpos.shape[-1] != self.nq:
             raise ValueError(f"qpos must end in nq={self.nq}, got {tuple(qpos.shape)}")
         shape = qpos.shape[:-1]

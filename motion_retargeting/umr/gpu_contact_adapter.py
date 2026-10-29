@@ -16,7 +16,8 @@ from .gpu_contact import prepare_contact_problem, solve_bounded_contact
 def project_contacts_accelerated(model, qpos, fps, support_mask, *, config=None, confidence=None,
                                  source_foot_heights_m=None, device='cuda',
                                  gpu_max_iterations=None, pcg_iterations=120, pcg_tolerance=1e-6,
-                                 restoration_backend='cpu', restoration_device=None):
+                                 restoration_backend='cpu', restoration_device=None,
+                                 independent_certification=True):
     """Return (qpos, original diagnostics, original evidence, backend report).
 
     The caller must retain the usual native/final collision verification and
@@ -27,8 +28,10 @@ def project_contacts_accelerated(model, qpos, fps, support_mask, *, config=None,
     if restoration_backend not in ('cpu', 'torch'):
         raise ValueError('restoration_backend must be cpu or torch')
     metadata = {'requested_backend': 'torch_contact_gn', 'requested_device': str(device),
+                'independent_certification': bool(independent_certification),
+                'contact_quality_diagnostics_computed': True,
                 'used_backend': None, 'cpu_fallback_count': 0, 'fallback_reason': None,
-                'candidate': None, 'original_acceptance_checks': True,
+                'candidate': None, 'original_acceptance_checks': bool(independent_certification),
                 'original_restoration_backend': restoration_backend == 'cpu',
                 'restoration_requested_backend': restoration_backend,
                 'restoration_frames': 0, 'restoration_cpu_fallback_count': 0}
@@ -53,9 +56,10 @@ def project_contacts_accelerated(model, qpos, fps, support_mask, *, config=None,
                 if prepared.problem.config.revision29_multiplier:
                     arrays.append(neutral.detach().cpu().numpy().ravel())
                 return np.concatenate(arrays)
-            cpu_initial = np.asarray(fun(initial)); torch_initial = candidate_residual(prepared.initial)
-            if cpu_initial.shape != torch_initial.shape or not np.allclose(cpu_initial, torch_initial, atol=1e-8, rtol=1e-10):
-                raise ValueError('reference residual mismatch at initial iterate')
+            if independent_certification:
+                cpu_initial = np.asarray(fun(initial)); torch_initial = candidate_residual(prepared.initial)
+                if cpu_initial.shape != torch_initial.shape or not np.allclose(cpu_initial, torch_initial, atol=1e-8, rtol=1e-10):
+                    raise ValueError('reference residual mismatch at initial iterate')
             limit = int(kwargs.get('max_nfev', 60)) if gpu_max_iterations is None else int(gpu_max_iterations)
             result = solve_bounded_contact(prepared.problem,prepared.initial,prepared.lower,prepared.upper,
                                            max_iterations=limit,pcg_iterations=pcg_iterations,
@@ -69,17 +73,23 @@ def project_contacts_accelerated(model, qpos, fps, support_mask, *, config=None,
                 raise RuntimeError('candidate did not converge: ' + result.reason)
             if not np.isfinite(candidate).all() or np.any(candidate < lower) or np.any(candidate > upper):
                 raise ValueError('candidate is outside official contact correction bounds')
-            residual = np.asarray(fun(candidate.ravel()))
-            tensor_residual = candidate_residual(candidate)
-            if residual.shape != tensor_residual.shape or not np.allclose(residual,tensor_residual,atol=1e-8,rtol=1e-10):
-                raise ValueError('reference residual mismatch at candidate')
-            cost = .5 * float(np.dot(residual,residual))
-            if not np.isfinite(cost) or cost > .5 * float(np.dot(cpu_initial,cpu_initial)) + 1e-8:
-                raise ValueError('candidate increased the reference objective')
+            if independent_certification:
+                residual = np.asarray(fun(candidate.ravel()))
+                tensor_residual = candidate_residual(candidate)
+                if residual.shape != tensor_residual.shape or not np.allclose(residual,tensor_residual,atol=1e-8,rtol=1e-10):
+                    raise ValueError('reference residual mismatch at candidate')
+                cost = .5 * float(np.dot(residual,residual))
+                if not np.isfinite(cost) or cost > .5 * float(np.dot(cpu_initial,cpu_initial)) + 1e-8:
+                    raise ValueError('candidate increased the reference objective')
+                message = 'Torch bounded Gauss-Newton candidate independently checked against MuJoCo residual'
+            else:
+                cost = float(result.final_cost)
+                if not np.isfinite(cost):
+                    raise ValueError('candidate GPU objective is nonfinite')
+                message = 'Torch bounded Gauss-Newton converged; independent certification disabled'
             metadata['used_backend'] = 'torch_contact_gn'
             return SimpleNamespace(x=candidate.ravel(),success=True,status=1,
-                message='Torch bounded Gauss-Newton candidate independently checked against MuJoCo residual',
-                nfev=result.iterations,cost=cost)
+                message=message,nfev=result.iterations,cost=cost)
         except Exception as exc:
             metadata.update(used_backend='scipy_cpu',cpu_fallback_count=1,
                             fallback_reason=f'{type(exc).__name__}: {exc}')
@@ -93,7 +103,8 @@ def project_contacts_accelerated(model, qpos, fps, support_mask, *, config=None,
         importer = builtins.__import__
         def restoration(model, qpos, foot_geom_ids, local_points, support, anchors, **kwargs):
             corrected, record = restore_frame_accelerated(model, qpos, foot_geom_ids, local_points,
-                support, anchors, device=restoration_device or device, **kwargs)
+                support, anchors, device=restoration_device or device,
+                independent_certification=independent_certification, **kwargs)
             metadata['restoration_frames'] += 1
             metadata['restoration_cpu_fallback_count'] += int(record.get('cpu_fallback', False))
             return corrected, record
@@ -112,6 +123,9 @@ def project_contacts_accelerated(model, qpos, fps, support_mask, *, config=None,
     if not expected_call[0]:
         raise RuntimeError('Reference projection did not execute its contact solver')
     diagnostics = dict(diagnostics)
+    if not independent_certification:
+        diagnostics['independent_certification'] = False
+        diagnostics['accepted'] = None
     diagnostics['main_solver_backend'] = metadata['used_backend']
     diagnostics['main_solver_cpu_fallback_count'] = metadata['cpu_fallback_count']
     return corrected, diagnostics, evidence, metadata
@@ -129,7 +143,7 @@ def refine_payload_accelerated(payload, source_dir, *, model_path=None, phase_co
                                gpu_max_iterations=None, pcg_iterations=120, pcg_tolerance=1e-6,
                                restoration_backend='cpu', restoration_device=None,
                                source_handoff=None, attempt_nonce=None, native_trajectory=None,
-                               binding_sha256=None):
+                               binding_sha256=None, independent_certification=True):
     """Original contact payload including CPU fallback identity and diagnostics."""
     import hashlib
     import json
@@ -140,7 +154,8 @@ def refine_payload_accelerated(payload, source_dir, *, model_path=None, phase_co
         corrected, projection, arrays, record = project_contacts_accelerated(
             model,qpos,fps,support,device=device,gpu_max_iterations=gpu_max_iterations,
             pcg_iterations=pcg_iterations,pcg_tolerance=pcg_tolerance,
-            restoration_backend=restoration_backend,restoration_device=restoration_device,**kwargs)
+            restoration_backend=restoration_backend,restoration_device=restoration_device,
+            independent_certification=independent_certification,**kwargs)
         metadata.append(record)
         projection['main_solver_details'] = record
         return corrected, projection, arrays
@@ -169,6 +184,11 @@ def refine_payload_accelerated(payload, source_dir, *, model_path=None, phase_co
     digest = hashlib.sha256()
     for path in source_files:
         digest.update(path.name.encode()); digest.update(path.read_bytes())
+    if not independent_certification:
+        # Diagnostics remain available, but are not an independent acceptance.
+        report['accepted'] = None
+        report['independent_certification'] = False
+        report['projection']['accepted'] = None
     report['experimental_contact_backend'] = dict(metadata[0], adapter_sha256=digest.hexdigest())
     report['experimental_contact_backend']['source_handoff_consumed'] = source_handoff is not None
     report['experimental_contact_backend']['contact_source_backend'] = (
@@ -185,7 +205,8 @@ def refine_file_accelerated(trajectory, output_dir, *, source_dir=None, model_pa
                             overwrite=False, source_model_path=None, device='cuda',
                             gpu_max_iterations=None, pcg_iterations=120, pcg_tolerance=1e-6,
                             restoration_backend='cpu', restoration_device=None,
-                            source_handoff=None, attempt_nonce=None, binding_sha256=None):
+                            source_handoff=None, attempt_nonce=None, binding_sha256=None,
+                            independent_certification=True):
     """Apply original file safeguards and atomic publication to the candidate."""
     from . import contact
     def refine(payload,source_dir,**kwargs):
@@ -193,7 +214,8 @@ def refine_file_accelerated(trajectory, output_dir, *, source_dir=None, model_pa
                                           pcg_iterations=pcg_iterations,pcg_tolerance=pcg_tolerance,
                                           restoration_backend=restoration_backend,restoration_device=restoration_device,
                                           source_handoff=source_handoff,attempt_nonce=attempt_nonce,
-                                          binding_sha256=binding_sha256,native_trajectory=trajectory,**kwargs)
+                                          binding_sha256=binding_sha256,native_trajectory=trajectory,
+                                          independent_certification=independent_certification,**kwargs)
     implementation = _clone(contact.refine_file, {'refine_payload': refine})
     return implementation(trajectory,output_dir,source_dir=source_dir,
                           model_path=contact.ROBOT_XML if model_path is None else model_path,

@@ -7,6 +7,7 @@ finger rotations and the latter retains them. No CPU fallback is implicit.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections import OrderedDict
 import hashlib
 import importlib
 import importlib.util
@@ -23,21 +24,68 @@ import torch
 POLICIES = {"native": (True, 32), "contact": (False, 16)}
 _ASSET_SIGNATURES = {}
 _SOURCE_LOCK = threading.RLock()
+_FILE_DIGESTS = OrderedDict()
+_MODEL_STATES = OrderedDict()
 
 
-def _file_sha(path):
-    digest = hashlib.sha256()
-    with Path(path).open('rb') as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
-            digest.update(chunk)
-    return digest.hexdigest()
+def checked_file_sha(path):
+    """Reuse a content digest only while the file's full stat signature is intact.
+
+    Every request checks inode, size, nanosecond mtime and ctime. A replacement or
+    an in-place edit invalidates the digest, even if its mtime is restored. A
+    concurrent edit during hashing fails instead of committing an inconsistent key.
+    """
+    path = Path(path).resolve()
+    def state():
+        item = path.stat()
+        return item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns, item.st_ctime_ns
+    with _SOURCE_LOCK:
+        before = state()
+        cached = _FILE_DIGESTS.get(str(path))
+        if cached is not None and cached[0] == before:
+            _FILE_DIGESTS.move_to_end(str(path))
+            return cached[1]
+        digest = hashlib.sha256()
+        with path.open('rb') as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                digest.update(chunk)
+        if state() != before:
+            raise RuntimeError(f'source dependency changed while hashing: {path}')
+        value = digest.hexdigest()
+        _FILE_DIGESTS[str(path)] = (before, value)
+        _FILE_DIGESTS.move_to_end(str(path))
+        while len(_FILE_DIGESTS) > 16384:
+            _FILE_DIGESTS.popitem(last=False)
+        return value
+
+
+_file_sha = checked_file_sha
+
+
+def _device_identity(device):
+    """Normalize logical CUDA aliases to the physical device when UUID exists."""
+    device = torch.device(device)
+    if device.type != 'cuda':
+        return {'type': device.type, 'processor': platform.processor()}
+    properties = torch.cuda.get_device_properties(device)
+    uuid = getattr(properties, 'uuid', None)
+    result = {'type': 'cuda', 'uuid': str(uuid) if uuid is not None else None,
+              'name': properties.name, 'capability': [properties.major, properties.minor],
+              'total_memory': properties.total_memory,
+              'multi_processor_count': properties.multi_processor_count}
+    if uuid is None:
+        # Older runtimes cannot prove that two visibility masks select the same
+        # card. Preserve their mapping rather than allowing a speculative hit.
+        result['logical_device'] = str(device)
+        result['visibility_fallback'] = os.environ.get('CUDA_VISIBLE_DEVICES')
+    return result
 
 
 def source_identity(sequence, soma, device, dtype, policy, batch_size):
     """Content-address all source input, assets and numerical/runtime policy.
 
-    Asset digests are intentionally recomputed at request boundaries; mutating an
-    asset while retaining the same path must never reuse stale resident weights.
+    Dependency stats are checked at every request boundary; unchanged files reuse
+    their content digest. In-place edits cannot reuse stale resident weights.
     """
     if policy not in POLICIES:
         raise ValueError(f'unknown source policy {policy!r}')
@@ -59,9 +107,8 @@ def source_identity(sequence, soma, device, dtype, policy, batch_size):
             runtime_packages[name] = importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError:
             runtime_packages[name] = None
-    properties = torch.cuda.get_device_properties(device) if torch.device(device).type == 'cuda' else None
     payload = {
-        'version': 1, 'motion_values_sha256': hashlib.sha256(values.tobytes()).hexdigest(),
+        'version': 2, 'motion_values_sha256': hashlib.sha256(values.tobytes()).hexdigest(),
         'motion_shape': list(values.shape), 'motion_dtype': str(values.dtype),
         'channels': sequence['channels'], 'channel_offsets': np.asarray(sequence['channel_offsets']).tolist(),
         'joint_names': list(sequence['joint_names']), 'shape_variant': sequence.get('soma_shape_variant'),
@@ -72,9 +119,7 @@ def source_identity(sequence, soma, device, dtype, policy, batch_size):
         'soma_source_sha256': _file_sha(soma.__file__), 'torch': torch.__version__,
         'cuda': torch.version.cuda, 'cudnn': torch.backends.cudnn.version(),
         'numpy': np.__version__, 'python': platform.python_version(), 'runtime_packages': runtime_packages,
-        'device': str(device), 'cuda_visible_devices': os.environ.get('CUDA_VISIBLE_DEVICES'),
-        'device_properties': str(properties) if properties is not None else platform.processor(),
-        'device_uuid': str(getattr(properties, 'uuid', None)) if properties is not None else None,
+        'device': _device_identity(device),
         'dtype': str(dtype), 'policy': policy, 'batch_size': batch_size,
         'tf32_matmul': bool(torch.backends.cuda.matmul.allow_tf32),
         'tf32_cudnn': bool(torch.backends.cudnn.allow_tf32),
@@ -95,7 +140,10 @@ class ResidentGeometry:
 class ResidentSoma:
     """Reuse model and identity tensors while retaining computed data on device."""
     def __init__(self, sequence, device='cuda:0', soma=None, *, batch_sizes=None):
-        self.sequence = dict(sequence, soma_device=str(torch.device(device)))
+        selected = torch.device(device)
+        if selected.type == 'cuda' and selected.index is None:
+            selected = torch.device('cuda', torch.cuda.current_device())
+        self.sequence = dict(sequence, soma_device=str(selected))
         requested={} if batch_sizes is None else dict(batch_sizes)
         if set(requested)-set(POLICIES): raise ValueError('unknown SOMA batch policy')
         self.batch_sizes={}
@@ -104,7 +152,7 @@ class ResidentSoma:
             if isinstance(value,bool) or not isinstance(value,int) or not 1 <= value <= default:
                 raise ValueError('source microbatch must be a positive integer at most the default')
             self.batch_sizes[policy]=value
-        self.device = torch.device(device)
+        self.device = selected
         if self.device.type == 'cuda' and not torch.cuda.is_available():
             raise RuntimeError('CUDA unavailable; resident source does not silently fall back')
         self.soma = soma if soma is not None else importlib.import_module('soma_source')
@@ -125,15 +173,37 @@ class ResidentSoma:
                 if hasattr(cached, 'cache_clear'):
                     cached.cache_clear()
             _ASSET_SIGNATURES[asset_path] = asset_signature
-        layer, identity, scale, kwargs, lod, actual_device = self.soma._boneseed_layer_and_shape(self.sequence)
-        if torch.device(actual_device) != self.device:
-            raise RuntimeError(f'SOMA chose unexpected device {actual_device}')
-        self.layer = layer
-        self.identity = torch.as_tensor(identity, device=self.device)
-        self.scale = torch.as_tensor(scale, device=self.device)
-        self.kwargs = {k: torch.as_tensor(v, device=self.device) for k, v in kwargs.items()}
-        self.faces = torch.as_tensor(self.soma._faces_from_soma_rig_data(layer.rig_data, lod=lod),
-                                     dtype=torch.long, device=self.device)
+        # Model/shape tensors depend on static assets and numerical runtime, not
+        # the motion values or frame count. Keep a bounded actor-process cache.
+        details = self._identities['native'][1]
+        model_key = {key: value for key, value in details.items() if key not in {
+            'motion_values_sha256', 'motion_shape', 'motion_dtype', 'channels',
+            'channel_offsets', 'joint_names', 'fps', 'output_up', 'policy', 'batch_size'}}
+        # A process-local tensor also belongs to its logical allocation device.
+        model_key['allocation_device'] = str(self.device)
+        key = hashlib.sha256(json.dumps(model_key, sort_keys=True, default=str).encode()).hexdigest()
+        with _SOURCE_LOCK:
+            state = _MODEL_STATES.get(key)
+            self.model_cache_hit = state is not None
+            if state is None:
+                layer, identity, scale, kwargs, lod, actual_device = self.soma._boneseed_layer_and_shape(self.sequence)
+                actual = torch.device(actual_device)
+                if actual.type == 'cuda' and actual.index is None:
+                    actual = torch.device('cuda', torch.cuda.current_device())
+                if actual != self.device:
+                    raise RuntimeError(f'SOMA chose unexpected device {actual_device}')
+                faces_cpu = np.asarray(self.soma._faces_from_soma_rig_data(layer.rig_data, lod=lod),
+                                       dtype=np.int64).copy()
+                faces_cpu.setflags(write=False)
+                state = (layer, torch.as_tensor(identity, device=self.device),
+                         torch.as_tensor(scale, device=self.device),
+                         {k: torch.as_tensor(v, device=self.device) for k, v in kwargs.items()},
+                         torch.tensor(faces_cpu, dtype=torch.long, device=self.device), faces_cpu)
+                _MODEL_STATES[key] = state
+                while len(_MODEL_STATES) > 4:
+                    _MODEL_STATES.popitem(last=False)
+            _MODEL_STATES.move_to_end(key)
+            self.layer, self.identity, self.scale, self.kwargs, self.faces, self.faces_cpu = state
 
     def forward(self, frame_ids, policy):
         if policy not in POLICIES:
@@ -180,7 +250,7 @@ def retarget_frame(points):
 def sole_points(geometry, sole_ids):
     if geometry.identity['policy'] != 'contact':
         raise ValueError('sole points must use contact policy with fingers retained')
-    ids = torch.as_tensor(sole_ids, device=geometry.vertices.device, dtype=torch.long)
+    ids = _constant_tensor(sole_ids, device=geometry.vertices.device, dtype=torch.long)
     if ids.ndim != 2 or ids.shape[0] != 2 or torch.any(ids < 0) or torch.any(ids >= geometry.vertices.shape[1]):
         raise ValueError('sole vertex IDs must be an in-range [2, points] array')
     return retarget_frame(geometry.vertices[:, ids])
@@ -190,7 +260,16 @@ def _normalize(v):
     return v / torch.linalg.vector_norm(v, dim=-1, keepdim=True).clamp_min(1e-12)
 
 
-def surface_features(geometry, face_ids, bary, template_vertices, reference_normals=None):
+def _constant_tensor(value, *, device, dtype):
+    # Cached layouts are read-only NumPy arrays. Copy them explicitly rather
+    # than exposing non-writable storage through a writable Torch alias.
+    factory = (torch.tensor if isinstance(value, np.ndarray) and not value.flags.writeable
+               else torch.as_tensor)
+    return factory(value, device=device, dtype=dtype)
+
+
+def surface_features(geometry, face_ids, bary, template_vertices, reference_normals=None, *,
+                     retain_precise_rotations=False):
     """GPU interpolation, dynamic normals and template-to-motion normal transport.
 
     Binding indices and barycentric weights must come from the existing frozen
@@ -200,8 +279,8 @@ def surface_features(geometry, face_ids, bary, template_vertices, reference_norm
         raise ValueError('surface targets must use native finger-zero policy')
     vertices = retarget_frame(geometry.vertices)
     device = vertices.device
-    face_ids = torch.as_tensor(face_ids, device=device, dtype=torch.long)
-    bary = torch.as_tensor(bary, device=device, dtype=vertices.dtype)
+    face_ids = _constant_tensor(face_ids, device=device, dtype=torch.long)
+    bary = _constant_tensor(bary, device=device, dtype=vertices.dtype)
     if face_ids.ndim != 1 or bary.shape != (len(face_ids), 3) or not torch.isfinite(bary).all():
         raise ValueError('invalid binding arrays')
     if torch.any(face_ids < 0) or torch.any(face_ids >= len(geometry.faces)):
@@ -218,14 +297,16 @@ def surface_features(geometry, face_ids, bary, template_vertices, reference_norm
                                           tri[..., 2, :] - tri[..., 0, :], dim=-1))
         e2 = _normalize(torch.linalg.cross(n, e1, dim=-1))
         return torch.stack((e1, e2, n), dim=-1)
-    template = torch.as_tensor(template_vertices, device=device, dtype=torch.float64)
+    template = _constant_tensor(template_vertices, device=device, dtype=torch.float64)
     if template.ndim != 2 or template.shape[1] != 3 or len(template) != vertices.shape[1]:
         raise ValueError('template vertex topology differs from motion')
     rotations = basis(tri64) @ basis(template[faces]).transpose(-1, -2)
     result = {'points': points, 'normals': normal.to(vertices.dtype),
               'face_rotations': rotations.to(vertices.dtype)}
+    if retain_precise_rotations:
+        result['precise_face_rotations'] = rotations
     if reference_normals is not None:
-        reference = torch.as_tensor(reference_normals, device=device, dtype=rotations.dtype)
+        reference = _constant_tensor(reference_normals, device=device, dtype=rotations.dtype)
         if reference.shape != (len(face_ids), 3):
             raise ValueError('reference normals have wrong shape')
         result['transported_normals'] = _normalize(torch.einsum('fsij,sj->fsi', rotations, reference)).to(vertices.dtype)

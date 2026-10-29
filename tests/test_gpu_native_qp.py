@@ -88,3 +88,113 @@ def test_fallback_for_unconstrained_qp():
     out=solve_batched_step(H,g,lower,upper,A,b,b,max_iterations=1,fallback=True)
     assert out.converged.all() and out.fallback_used.all()
     torch.testing.assert_close(out.x,-g,atol=1e-9,rtol=0)
+
+
+@pytest.mark.parametrize('mixed_soft', [False, True])
+def test_fallback_eliminates_hard_row_slacks_without_changing_constraints(monkeypatch, mixed_soft):
+    import clarabel
+
+    captured = []
+    original_solver = clarabel.DefaultSolver
+
+    def capture(P, q, A, b, cones, settings):
+        captured.append((P.copy(), q.copy(), A.copy(), settings))
+        return original_solver(P, q, A, b, cones, settings)
+
+    monkeypatch.setattr(clarabel, 'DefaultSolver', capture)
+    H = torch.eye(2, dtype=torch.float64)[None]
+    g = torch.tensor([[-2., -1.]], dtype=torch.float64)
+    lower = torch.full_like(g, -1.)
+    upper = torch.full_like(g, 1.)
+    # The last hard row models a harmless padded inequality.
+    A = torch.tensor([[[1., 0.], [0., 1.], [0., 0.]]], dtype=torch.float64)
+    b = torch.tensor([[.3, -.8, 0.]], dtype=torch.float64)
+    costs = torch.tensor([[0., 8. if mixed_soft else 0., 0.]], dtype=torch.float64)
+    out = solve_batched_step(H, g, lower, upper, A, b, costs,
+        max_iterations=1, fallback=True)
+
+    assert out.converged.all() and out.fallback_used.all()
+    assert out.fallback_status == ('Solved',)
+    assert len(captured) == 1
+    P, q, constraint_matrix, settings = captured[0]
+    dimension = 2 + int(mixed_soft)
+    assert P.shape == (dimension, dimension) and q.shape == (dimension,)
+    assert constraint_matrix.shape[1] == dimension
+    assert settings.tol_gap_abs == settings.tol_gap_rel == settings.tol_feas == 1e-10
+    np.testing.assert_array_equal(P.diagonal(), [1., 1., 8.] if mixed_soft else [1., 1.])
+    assert out.slack.shape == (1, 3)
+    assert out.slack[0, 0] == out.slack[0, 2] == 0
+    expected_y = -.6 if mixed_soft else -.8
+    torch.testing.assert_close(out.x, torch.tensor([[.3, expected_y]], dtype=torch.float64),
+                               atol=1e-8, rtol=0)
+    torch.testing.assert_close(out.slack, torch.tensor([[0., .2 if mixed_soft else 0., 0.]], dtype=torch.float64),
+                               atol=1e-8, rtol=0)
+    assert out.constraint_violation.max() <= 1e-8
+
+
+def test_real_native_step_fallback_retries_without_equilibration(monkeypatch):
+    """Captured complete-motion CUDA step, formerly rejected as AlmostSolved."""
+    import json
+    from pathlib import Path
+    from types import SimpleNamespace
+    import clarabel
+
+    fixture = Path(__file__).parent / 'fixtures/native_qp_failed_step_20261028.npz'
+    with np.load(fixture, allow_pickle=False) as packed:
+        args = [torch.tensor(packed[name][None], dtype=torch.float64)
+                for name in ('H', 'g', 'lower', 'upper', 'A', 'b', 'soft_cost')]
+        balls = json.loads(str(packed['balls_json'].item()))
+    calls = []
+    original_solver = clarabel.DefaultSolver
+
+    def capture(P, q, A, b, cones, settings):
+        record = {'P': P.copy(), 'q': q.copy(), 'A': A.copy(), 'b': b.copy(),
+                  'equilibrated': settings.equilibrate_enable}
+        assert settings.tol_gap_abs == settings.tol_gap_rel == settings.tol_feas == 1e-10
+        calls.append(record)
+        solver = original_solver(P, q, A, b, cones, settings)
+        def solve():
+            solution = solver.solve()
+            record['status'] = str(solution.status)
+            return solution
+        return SimpleNamespace(solve=solve)
+
+    monkeypatch.setattr(clarabel, 'DefaultSolver', capture)
+    out = solve_batched_step(*args, balls=balls, max_iterations=1, fallback=True)
+    assert out.fallback_used.all() and out.converged.all()
+    assert out.fallback_status == ('Solved',)
+    assert out.constraint_violation.max() <= 1e-8
+    assert calls[0]['equilibrated'] is True and calls[-1]['status'] == 'Solved'
+    if calls[0]['status'] != 'Solved':
+        assert len(calls) == 2 and calls[1]['equilibrated'] is False
+        for name in ('P', 'A'):
+            np.testing.assert_array_equal(calls[0][name].toarray(), calls[1][name].toarray())
+        for name in ('q', 'b'):
+            np.testing.assert_array_equal(calls[0][name], calls[1][name])
+    else:
+        assert len(calls) == 1
+    assert torch.isfinite(out.x).all()
+    assert torch.all(out.x >= args[2] - 1e-8) and torch.all(out.x <= args[3] + 1e-8)
+    for ids, radius in balls:
+        assert torch.linalg.vector_norm(out.x[0, ids]) <= radius + 1e-8
+
+
+def test_fallback_still_rejects_almost_solved_after_unscaled_retry(monkeypatch):
+    import clarabel
+    from types import SimpleNamespace
+
+    equilibrated = []
+    def almost_solved(P, q, A, b, cones, settings):
+        equilibrated.append(settings.equilibrate_enable)
+        assert settings.tol_gap_abs == settings.tol_gap_rel == settings.tol_feas == 1e-10
+        return SimpleNamespace(solve=lambda: SimpleNamespace(status='AlmostSolved', x=np.zeros(len(q))))
+    monkeypatch.setattr(clarabel, 'DefaultSolver', almost_solved)
+    H = torch.eye(2, dtype=torch.float64)[None]
+    g = torch.tensor([[-1., 2.]], dtype=torch.float64)
+    lo, hi = torch.full_like(g, -torch.inf), torch.full_like(g, torch.inf)
+    A = torch.empty((1, 0, 2), dtype=torch.float64)
+    empty = torch.empty((1, 0), dtype=torch.float64)
+    out = solve_batched_step(H, g, lo, hi, A, empty, empty, max_iterations=1, fallback=True)
+    assert equilibrated == [True, False]
+    assert out.fallback_used.all() and not out.converged.any()
+    assert out.fallback_status == ('AlmostSolved',)

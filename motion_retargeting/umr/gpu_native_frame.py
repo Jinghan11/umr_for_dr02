@@ -31,7 +31,8 @@ class NativeKinematics:
                 node = int(m.body_parentid[node])
         self.ancestor = torch.as_tensor(mask,dtype=torch.bool,device=self.robot.device)
 
-    def evaluate(self, qpos, body_ids, local_points, local_normals):
+    def evaluate(self, qpos, body_ids, local_points, local_normals, *,
+                 fk=None, compute_normals=True):
         m=self.model; robot=self.robot
         if qpos.ndim != 2 or qpos.shape[1] != m.nq or qpos.dtype != torch.float64:
             raise ValueError('qpos must be [batch,36] float64')
@@ -41,12 +42,14 @@ class NativeKinematics:
         if ids.ndim != 1 or pts.shape != (len(ids),3) or norms.shape != pts.shape:
             raise ValueError('invalid slot binding')
         if bool(((ids < 0) | (ids >= m.nbody)).any()): raise ValueError('invalid body index')
-        fk=robot.fk(qpos)
+        if fk is None:
+            fk=robot.fk(qpos)
         rot=fk['body_rot'][:,ids]
         point=fk['body_pos'][:,ids] + torch.einsum('bsij,sj->bsi',rot,pts)
-        normal=torch.einsum('bsij,sj->bsi',rot,norms)
+        normal=torch.einsum('bsij,sj->bsi',rot,norms) if compute_normals else None
         B,S=point.shape[:2]
-        jp=qpos.new_zeros((B,S,3,m.nv)); jn=torch.zeros_like(jp)
+        jp=qpos.new_zeros((B,S,3,m.nv))
+        jn=torch.zeros_like(jp) if compute_normals else None
         active=self.ancestor[ids,self.root].to(qpos.dtype)[None,:,None,None]
         eye=torch.eye(3,dtype=qpos.dtype,device=qpos.device).view(1,1,3,3)
         jp[:,:,:,:3]=active*eye
@@ -54,18 +57,39 @@ class NativeKinematics:
         axes=fk['body_rot'][:,int(m.jnt_bodyid[self.root])].transpose(1,2)
         rel=point-fk['joint_world_anchors'][:,self.root,None,:]
         jp[:,:,:,3:6]=active*torch.cross(axes[:,None,:,:].expand(-1,S,-1,-1),rel[:,:,None,:].expand(-1,-1,3,-1),dim=-1).transpose(2,3)
-        jn[:,:,:,3:6]=active*torch.cross(axes[:,None,:,:].expand(-1,S,-1,-1),normal[:,:,None,:].expand(-1,-1,3,-1),dim=-1).transpose(2,3)
-        for j in range(m.njnt):
-            typ=int(m.jnt_type[j])
-            if typ == mujoco.mjtJoint.mjJNT_FREE: continue
-            d=int(m.jnt_dofadr[j]); a=self.ancestor[ids,j].to(qpos.dtype)[None,:,None]
-            axis=fk['joint_world_axes'][:,j,None,:].expand(-1,S,-1)
-            if typ == mujoco.mjtJoint.mjJNT_HINGE:
-                delta=point-fk['joint_world_anchors'][:,j,None,:]
-                jp[:,:,:,d]=a*torch.cross(axis,delta,dim=-1)
-                jn[:,:,:,d]=a*torch.cross(axis,normal,dim=-1)
-            elif typ == mujoco.mjtJoint.mjJNT_SLIDE: jp[:,:,:,d]=a*axis
-            else: raise ValueError('unsupported joint')
+        if compute_normals:
+            jn[:,:,:,3:6]=active*torch.cross(axes[:,None,:,:].expand(-1,S,-1,-1),normal[:,:,None,:].expand(-1,-1,3,-1),dim=-1).transpose(2,3)
+        # Every scalar column depends only on the already-computed FK. Build
+        # all independent columns together instead of launching one set of
+        # cross products/masks/slice writes for each of the 29 scalar joints.
+        # The public binding-index validation above is deliberately retained.
+        layouts = getattr(self, '_scalar_jacobian_layouts', None)
+        if layouts is None:
+            layouts = self._scalar_jacobian_layouts = {}
+        layout = layouts.get(qpos.device)
+        if layout is None:
+            scalar = np.flatnonzero(m.jnt_type != int(mujoco.mjtJoint.mjJNT_FREE))
+            types = np.asarray(m.jnt_type)[scalar]
+            if np.any((types != int(mujoco.mjtJoint.mjJNT_HINGE))
+                      & (types != int(mujoco.mjtJoint.mjJNT_SLIDE))):
+                raise ValueError('unsupported joint')
+            joints = torch.as_tensor(scalar, dtype=torch.long, device=qpos.device)
+            dofs = torch.as_tensor(np.asarray(m.jnt_dofadr)[scalar], dtype=torch.long,
+                                   device=qpos.device)
+            hinges = torch.as_tensor(types == int(mujoco.mjtJoint.mjJNT_HINGE),
+                                     dtype=torch.bool, device=qpos.device)[None, None, :, None]
+            layout = layouts[qpos.device] = joints, dofs, hinges
+        joints, dofs, hinges = layout
+        axis = fk['joint_world_axes'][:, joints][:, None]
+        anchor = fk['joint_world_anchors'][:, joints][:, None]
+        active = self.ancestor[ids[:, None], joints[None]].to(qpos.dtype)[None, :, :, None]
+        derivative = torch.where(hinges,
+            torch.linalg.cross(axis, point[:, :, None, :]-anchor, dim=-1), axis)
+        jp[:, :, :, dofs] = (active*derivative).transpose(-1, -2)
+        if compute_normals:
+            derivative = torch.linalg.cross(axis, normal[:, :, None, :], dim=-1)
+            derivative = torch.where(hinges, derivative, torch.zeros_like(derivative))
+            jn[:, :, :, dofs] = (active*derivative).transpose(-1, -2)
         return point,normal,jp,jn
 
 
@@ -174,6 +198,9 @@ def solve_sequential_batch(initial_qpos, lengths, adapter, scalar_lower, scalar_
         raise TypeError('adapter must provide begin_frame and linearize')
     q=initial_qpos.clone(); previous=None; previous2=None
     states=[{} for _ in range(B)]; trajectories=[[] for _ in range(B)]
+    # Carry only the primal step: contact rows may change between solves, so
+    # row-indexed dual state cannot be reused without an explicit row mapping.
+    warm_steps=initial_qpos.new_zeros((B,35))
     fallback_count=0; total_steps=0; failed=[]
     for frame in range(max(lengths)):
         ids=[i for i,n in enumerate(lengths) if frame<n]
@@ -183,19 +210,29 @@ def solve_sequential_batch(initial_qpos, lengths, adapter, scalar_lower, scalar_
         p2=previous2[ix] if previous2 is not None else None
         subset=[states[i] for i in ids]
         adapter.begin_frame(frame,ids,current,subset)
+        initial_step=warm_steps[ix]
         for iteration in range(initial_iterations if frame==0 else frame_iterations):
             params=adapter.linearize(frame,iteration,ids,current,p,p2,subset)
             if not isinstance(params,tuple) or len(params)!=8:
                 raise ValueError('linearize must explicitly return all objective/constraint inputs')
             H,g,lower,upper,A,b,cost,balls=params
-            step=solve_batched_step(H,g,lower,upper,A,b,cost,balls,tolerance=tolerance,max_iterations=max_iterations,fallback=fallback)
-            fallback_count+=int(step.fallback_used.sum().item()); total_steps+=len(ids)
-            if not bool(step.converged.all()):
+            step=solve_batched_step(H,g,lower,upper,A,b,cost,balls,
+                tolerance=tolerance,max_iterations=max_iterations,fallback=fallback,
+                initial_x=initial_step)
+            # Both values are needed on the host for fail-closed control flow;
+            # transfer them together to avoid two separate device synchronizations.
+            certified, fell_back = torch.stack((
+                step.converged.all().to(dtype=torch.int64), step.fallback_used.sum())).tolist()
+            fallback_count+=fell_back; total_steps+=len(ids)
+            if not certified:
                 failed.extend((frame,iteration,ids[j],step.fallback_status[j]) for j in torch.nonzero(~step.converged,as_tuple=False).flatten().tolist())
-                raise RuntimeError(f'native step not certified: {failed}')
+                raise RuntimeError(f'native step did not converge: {failed}')
             current=integrate_29dof(current,step.x,scalar_lower,scalar_upper)
+            initial_step=step.x.detach()
+        warm_steps[ix]=initial_step
         new=q.clone(); new[ix]=current
         for j,i in enumerate(ids): trajectories[i].append(current[j].clone())
         previous2=previous; previous=new; q=new
     return [torch.stack(t) for t in trajectories], {'step_count':total_steps,'fallback_count':fallback_count,
-        'fallback_fraction':fallback_count/total_steps if total_steps else 0.,'failed':failed}
+        'fallback_fraction':fallback_count/total_steps if total_steps else 0.,'failed':failed,
+        'independent_solver_certification':False}

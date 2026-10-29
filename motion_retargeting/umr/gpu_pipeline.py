@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import copy
+import fcntl
 from dataclasses import asdict, dataclass, field, replace
 import hashlib
 import importlib
@@ -18,6 +19,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ET
 
 import mujoco
 import numpy as np
@@ -27,6 +29,111 @@ from motion_retargeting.umr import run as provenance
 METHOD = Path(__file__).resolve().parent
 VERSION = "umr_torch_surface_roll2_collision_cpu_source_v3"
 _LABEL_ASSET_SIGNATURE = None
+
+
+
+class PreparationContext:
+    """Actor-local immutable preparation reuse with file-change invalidation."""
+    def __init__(self):
+        self.digests = {}
+        self.runtimes = {}
+        self.prepared = {}
+        self.source_names = {}
+        self.robot_bindings = {}
+
+    def file_sha256(self, path):
+        path = Path(path).resolve()
+        stat = path.stat()
+        stamp = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+        cached = self.digests.get(str(path))
+        if cached is None or cached[0] != stamp:
+            digest = provenance.file_sha256(path)
+            after = path.stat()
+            if stamp != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                raise RuntimeError(f'Preparation dependency changed while hashing: {path}')
+            cached = self.digests[str(path)] = (stamp, digest)
+        return cached[1]
+
+    def algorithm_identity(self):
+        paths = [METHOD / name for name in ('run.py', 'resampling.py', 'smpl_surface_adapter.py',
+                 'requirements.lock.txt', 'upstream/humanoid_retarget_defaults.json',
+                 'upstream/requirements-umr.txt')]
+        paths.extend((METHOD / 'upstream').rglob('*.py'))
+        return provenance.json_sha256({str(path.relative_to(METHOD)): self.file_sha256(path)
+                                       for path in sorted(set(paths))})
+
+    def runtime_identity(self, source_python):
+        launcher = Path(os.path.abspath(os.fspath(source_python or sys.executable)))
+        key = str(launcher)
+        if not launcher.is_file() or not os.access(launcher, os.X_OK):
+            raise ValueError(f'Source Python is not an executable file: {launcher}')
+        cached = self.runtimes.get(key)
+        if cached is not None:
+            identity, watched = cached
+            try:
+                if all(self.file_sha256(path) == digest for path, digest in watched.items()):
+                    return identity
+            except OSError:
+                pass
+        identity = source_runtime_identity(source_python)
+        paths = [launcher, Path(identity['torch_module']), Path(identity['numpy_module'])]
+        config = launcher.parent.parent / 'pyvenv.cfg'
+        if config.is_file():
+            paths.append(config)
+        self.runtimes[key] = (identity, {str(path): self.file_sha256(path) for path in paths})
+        return identity
+
+
+def _preparation_config_identity(args, batch):
+    """Drop only publication locations; resolve paths before dropping config_dir."""
+    def normalize(value):
+        if isinstance(value, dict):
+            return {key: normalize(item) for key, item in value.items()
+                    if key not in {'_config_path', '_config_dir'}}
+        if isinstance(value, (list, tuple)):
+            return [normalize(item) for item in value]
+        if isinstance(value, Path):
+            return str(value.resolve())
+        if isinstance(value, str) and value:
+            candidate = batch.resolve_path(value, args.config_data)
+            if candidate is not None and (candidate.exists() or value.startswith('.')):
+                return str(candidate)
+        return value
+    config = copy.deepcopy(args.config_data)
+    config.get('retarget', {}).pop('out', None)
+    resolved = {key: normalize(value) for key, value in vars(args).items()
+                if key not in {'config', 'config_data', 'out', 'source_feature_cache',
+                               'prepare_source_cache_only'}}
+    return {'config': normalize(config), 'resolved_arguments': resolved}
+
+
+def _robot_file_dependencies(path):
+    """Include XML includes and external geometry used by static bindings."""
+    pending = [Path(path).resolve()]
+    found = set()
+    while pending:
+        current = pending.pop()
+        if current in found:
+            continue
+        found.add(current)
+        root = ET.parse(current).getroot()
+        compiler = root.find('compiler')
+        settings = {} if compiler is None else compiler.attrib
+        for node in root.iter():
+            name = node.get('file')
+            if not name:
+                continue
+            candidate = Path(name)
+            if not candidate.is_absolute():
+                prefix = settings.get('meshdir' if node.tag == 'mesh' else 'texturedir',
+                                      settings.get('assetdir', '')) if node.tag in {'mesh', 'texture'} else ''
+                candidate = current.parent / prefix / candidate
+            candidate = candidate.resolve()
+            if node.tag == 'include':
+                pending.append(candidate)
+            else:
+                found.add(candidate)
+    return found
 
 
 def _source_subprocess_environment(assets_path=None):
@@ -149,7 +256,7 @@ def _slots_in_body_frame(model, template, selected):
     return model.geom_bodyid[geoms].astype(np.int64), body_points, body_normals
 
 
-def _source_dependencies(args, sequence, template_config, batch):
+def _source_dependencies(args, sequence, template_config, batch, *, file_digest=None):
     candidates = {Path(args.data), Path(args.slots)}
     for name in ("template_path", "soma_shape_params_path"):
         if sequence.get(name):
@@ -165,7 +272,18 @@ def _source_dependencies(args, sequence, template_config, batch):
         candidates.add(body_model)
     elif body_model.is_dir():
         candidates.update(p for p in body_model.rglob("*") if p.is_file())
-    return {str(path.resolve()): provenance.file_sha256(path) for path in sorted(candidates)}
+    # Robot binding and semantic files can live outside the SOMA asset directory.
+    candidates.update(_robot_file_dependencies(args.robot_xml))
+    segments = importlib.import_module("retarget_body_segment_surface")
+    candidates.add(Path(segments.resolve_smplx_55_segmentation_path()))
+    _, _, _, label_config = segments.load_smplx_55_to_17_config()
+    if label_config:
+        candidates.add(Path(label_config))
+    if getattr(args, 'revision29', None):
+        label_root = segments.resolve_soma_smplx_assets_dir()
+        candidates.update(path for path in label_root.rglob('*') if path.is_file())
+    digest = file_digest or provenance.file_sha256
+    return {str(path.resolve()): digest(path) for path in sorted(candidates)}
 
 
 def _atomic_npz(path, **payload):
@@ -206,7 +324,7 @@ class Prepared:
     joint_limits: dict = field(default_factory=dict)
 
 
-def collision_projector(config_path, prepared=None, ground_margin=None, locked_joint_ids=()):
+def collision_projector(config_path, prepared=None, ground_margin=None, locked_joint_ids=(), *, device=None, independent_certification=None):
     """Use exactly the selected reference settings for geometry constraints."""
     from motion_retargeting.umr.gpu_collision import CollisionProjector
     batch, pipeline = _upstream_modules()
@@ -226,8 +344,11 @@ def collision_projector(config_path, prepared=None, ground_margin=None, locked_j
     if ground_margin is not None:
         args = copy.deepcopy(args)
         args.ground_penetration_margin = float(ground_margin)
+    options = {} if device is None else {'device': device}
+    if independent_certification is not None:
+        options['independent_certification'] = independent_certification
     return CollisionProjector(model, args, common=batch.common, qpos_lower=lower, qpos_upper=upper,
-                              locked_joint_ids=locked_joint_ids)
+                              locked_joint_ids=locked_joint_ids, **options)
 
 
 def _revision_contract(config, args, model, limits):
@@ -275,8 +396,12 @@ def _smooth_revision(clip, qpos):
     return smooth(clip.model, qpos, addresses, joint_limits_by_qpos=clip.joint_limits, **settings), settings
 
 
-def prepare_config(config_path, *, source_python=None) -> Prepared:
+def prepare_config(config_path, *, source_python=None, feature_cache_root=None, context=None,
+                   source_device=None, source_context=None, source_cache_root=None,
+                   source_batch_sizes=None) -> Prepared:
     began = time.monotonic()
+    digest = context.file_sha256 if context is not None else provenance.file_sha256
+    source_bundle = None
     batch, pipeline = _upstream_modules()
     config_path = Path(config_path).resolve()
     config = batch.load_config(config_path)
@@ -302,50 +427,119 @@ def prepare_config(config_path, *, source_python=None) -> Prepared:
             raise ValueError("Torch retargeting requires a nonempty 50 Hz source from frame zero at stride 1")
         template_config = batch.smpl_template_config(args.config_data, sequence, seq_key,
                                                     str(sequence.get("gender", "neutral")).lower())
-        dependencies = _source_dependencies(args, sequence, template_config, batch)
+        dependencies = _source_dependencies(args, sequence, template_config, batch, file_digest=digest)
         # Reset source labels before the unchanged cache-only entry point binds
         # them, then let its parse_args apply this clip's explicit segmentation.
         _reset_upstream_segment_state(dependencies)
         batch.configure_body_segment_surface(args.config_data)
-        source_runtime = source_runtime_identity(source_python)
+        source_runtime = (context.runtime_identity(source_python) if context is not None
+                          else source_runtime_identity(source_python))
         identity = {"version": VERSION, "config": args.config_data,
-                    "dependencies": dependencies, "upstream_sha256": provenance.algorithm_identity(),
-                    "preparation_sha256": provenance.file_sha256(Path(__file__)),
+                    "dependencies": dependencies, "upstream_sha256": (context.algorithm_identity() if context is not None else provenance.algorithm_identity()),
+                    "preparation_sha256": digest(Path(__file__)),
                     "source_runtime": source_runtime,
-                    "source_worker_sha256": provenance.file_sha256(
+                    "source_worker_sha256": digest(
                         METHOD / 'upstream/scripts/retarget_smpl_to_humanoid_surface_vector_batch.py')}
-        source_signature = provenance.json_sha256(identity)
-        cache = output.with_name(output.stem + ".source_features.npz")
+        cache_identity = dict(identity)
+        if feature_cache_root is not None:
+            cache_identity['config'] = _preparation_config_identity(args, batch)
+            cache_identity['cache_schema'] = 'gpu_shared_cpu_features_v1'
+            cache_identity['frame_ids'] = frame_ids.tolist()
+            cache_identity['fps'] = fps
+        if source_device is not None:
+            from .gpu_source_adapter import source_feature_provider_identity
+            provider_identity = source_feature_provider_identity(
+                sequence, device=source_device, batch_sizes=source_batch_sizes)
+            cache_identity['source_feature_provider'] = provider_identity
+            identity['source_feature_provider'] = provider_identity
+        source_signature = provenance.json_sha256(cache_identity)
+        cache = (Path(feature_cache_root).resolve() / source_signature / 'source_features.npz'
+                 if feature_cache_root is not None else output.with_name(output.stem + ".source_features.npz"))
         marker = cache.with_suffix(".json")
+        cache.parent.mkdir(parents=True, exist_ok=True)
         cached = False
-        if cache.is_file() and marker.is_file():
-            try:
-                cached = json.loads(marker.read_text()) == {
-                    "signature": source_signature, "sha256": provenance.file_sha256(cache)}
-            except (ValueError, OSError):
-                cached = False
-        if not cached:
-            _populate_source_cache(batch, argv, cache, source_python=source_python, assets_path=assets_path)
-            provenance.atomic_json(marker, {"signature": source_signature,
-                                           "sha256": provenance.file_sha256(cache)})
+        # Serialize cache population; readers validate content before using it.
+        with cache.with_suffix('.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if cache.is_file() and marker.is_file():
+                try:
+                    cached = json.loads(marker.read_text()) == {
+                        "signature": source_signature, "sha256": digest(cache)}
+                except (ValueError, OSError):
+                    cached = False
+            if not cached:
+                if source_device is None:
+                    _populate_source_cache(batch, argv, cache, source_python=source_python, assets_path=assets_path)
+                else:
+                    from .gpu_source_adapter import prepare_source_features
+                    source_bundle = prepare_source_features(batch, args, sequence, seq_key,
+                        frame_ids, template_config, device=source_device, context=source_context,
+                        cache_root=source_cache_root, batch_sizes=source_batch_sizes)
+                    _atomic_npz(cache, **source_bundle['source'])
+                provenance.atomic_json(marker, {"signature": source_signature, "sha256": digest(cache)})
+            feature_sha = digest(cache)
+        retained = context.prepared.get(source_signature) if context is not None else None
+        if retained is not None and retained.identity['source_features_sha256'] == feature_sha:
+            # Config/output are job-local; arrays and compiled static geometry are immutable.
+            metadata = dict(retained.metadata, source_feature_cache=str(cache),
+                            source_feature_cache_hit=cached, prepared_memory_hit=True, robot_binding_memory_hit=True)
+            return replace(retained, output=output, reference_args=args,
+                           identity=dict(retained.identity, config=args.config_data), metadata=metadata,
+                           preparation_seconds=time.monotonic() - began)
         with np.load(cache, allow_pickle=False) as packed:
             source = {key: packed[key] for key in packed.files}
-        if not np.array_equal(source["frame_ids"], frame_ids):
-            raise ValueError("Prepared source cache changed the source frame clock")
+        if (int(source['version'].reshape(-1)[0]) != batch.SOURCE_FEATURE_CACHE_VERSION
+                or str(source['source_data'].reshape(-1)[0]) != str(Path(args.data).resolve())
+                or str(source['source_sequence_key'].reshape(-1)[0]) != str(seq_key)
+                or str(source['template_name'].reshape(-1)[0]) != str(template_config['name'])
+                or str(source['slots_path'].reshape(-1)[0]) != str(Path(args.slots).resolve())
+                or not np.array_equal(source["frame_ids"], frame_ids)):
+            raise ValueError("Prepared source cache changed the source identity, template, slots or clock")
         source_type = batch.common.source_model_type(sequence, template_config)
         source_names = None
         if source_type == "soma":
             # MHR output uses public model-joint order, which can differ from BVH.
             usd = batch.resolve_path(template_config.get("soma_usd_path"), args.config_data)
-            _, _, _, source_names, _ = batch.common.source_template_vertices_joints_faces(
-                sequence, template_config, args.smplx_model_dir, soma_usd_path=usd)
+            static_identity = {'template': template_config, 'dependencies': {
+                name: value for name, value in dependencies.items() if name != str(Path(args.data).resolve())},
+                'algorithm': identity['upstream_sha256'], 'runtime': source_runtime}
+            names_key = provenance.json_sha256(static_identity)
+            saved_names = source.get('source_joint_names')
+            if saved_names is not None:
+                if (saved_names.ndim != 1 or saved_names.dtype.kind not in 'US'
+                        or len(saved_names) != source['joints_scaled'].shape[1]
+                        or len(set(saved_names.astype(str).tolist())) != len(saved_names)):
+                    raise ValueError('Prepared source joint names do not match the checked joint array')
+                source_names = saved_names.astype(str).tolist()
+            else:
+                source_names = context.source_names.get(names_key) if context is not None else None
+            if source_names is None:
+                _, _, _, source_names, _ = batch.common.source_template_vertices_joints_faces(
+                    sequence, template_config, args.smplx_model_dir, soma_usd_path=usd)
+                if context is not None:
+                    context.source_names[names_key] = source_names
 
-        robot_xml = batch.prepare_robot_xml(args)
-        model = mujoco.MjModel.from_xml_path(str(robot_xml))
-        robot_slots, _, _ = batch.common.load_slot_data(args.slots, args.robot_name, args.slots_field)
-        template = batch.bind_robot_slots(model, args, robot_slots,
-            nearest_vertex_k=args.bind_nearest_vertex_k, project_to_surface=bool(args.project_robot_slots),
-            source_model_type=source_type, template_cfg=template_config)
+        static_config = _preparation_config_identity(args, batch)
+        static_config['config'].pop('motion', None)
+        for name in ('data', 'seq_key', 'seq_index', 'start', 'end', 'stride', 'max_frames'):
+            static_config['resolved_arguments'].pop(name, None)
+        binding_key = provenance.json_sha256({'config': static_config, 'template': template_config,
+            'source_type': source_type, 'dependencies': {
+                name: value for name, value in dependencies.items() if name != str(Path(args.data).resolve())},
+            'algorithm': identity['upstream_sha256'], 'runtime': source_runtime})
+        binding = context.robot_bindings.get(binding_key) if context is not None else None
+        binding_hit = binding is not None
+        if binding is None:
+            robot_xml = batch.prepare_robot_xml(args)
+            model = mujoco.MjModel.from_xml_path(str(robot_xml))
+            robot_slots, _, _ = batch.common.load_slot_data(args.slots, args.robot_name, args.slots_field)
+            template = batch.bind_robot_slots(model, args, robot_slots,
+                nearest_vertex_k=args.bind_nearest_vertex_k, project_to_surface=bool(args.project_robot_slots),
+                source_model_type=source_type, template_cfg=template_config)
+            binding = {'robot_xml': robot_xml, 'model': model, 'robot_slots': robot_slots,
+                       'template': template, 'reference_normals': None}
+        robot_xml, model = binding['robot_xml'], binding['model']
+        robot_slots, template = binding['robot_slots'], binding['template']
         selected = np.asarray(source["selected_slot_ids"], dtype=np.int64)
         if not len(selected):
             raise ValueError("Correspondence produced no selected surface targets")
@@ -365,13 +559,19 @@ def prepare_config(config_path, *, source_python=None) -> Prepared:
                     batch.apply_joint_qpos(current_model, current_data, sample_qpos, required=False)
                     batch.apply_mimic_qpos(current_model, current_data, robot.get("mimic_qpos", {}) or {})
 
-            reference = segments.robot_template_normals_in_tpose_root(model, template, apply_pose,
-                                                                       robot["point_cloud_center"])
-            reference = segments.robot_root_to_smpl_frame(reference)
+            reference = binding['reference_normals']
+            if reference is None:
+                reference = segments.robot_template_normals_in_tpose_root(model, template, apply_pose,
+                                                                           robot["point_cloud_center"])
+                reference = segments.robot_root_to_smpl_frame(reference)
+                binding['reference_normals'] = reference
             source_normals = batch.normalize_vectors(np.einsum("fsij,sj->fsi",
                 source["source_face_rotations"], reference[selected])).astype(np.float32)
         elif args.surface_normal_cost_mode != "direct":
             raise ValueError(f"Unsupported surface normal cost mode {args.surface_normal_cost_mode!r}")
+
+        if context is not None:
+            context.robot_bindings[binding_key] = binding
 
         point_weights = batch.surface_slot_costs_from_segments(len(robot_slots), source["source_slot_part_ids"],
             "point_cost", "TorchSurfacePoint")[selected]
@@ -390,9 +590,9 @@ def prepare_config(config_path, *, source_python=None) -> Prepared:
             initial[index, :3] = batch.common.source_root_joint_position(joints, source_names)
             initial[index, 3:7] = batch.common.source_qpos_body_heading(joints, source_names)
 
-    identity.update(source_features_sha256=provenance.file_sha256(cache),
-                    robot_xml_sha256=provenance.file_sha256(robot_xml))
-    return Prepared(output, model, frame_ids, fps, float(source["smpl_scale"].reshape(-1)[0]),
+    identity.update(source_features_sha256=feature_sha,
+                    source_feature_signature=source_signature, robot_xml_sha256=digest(robot_xml))
+    prepared = Prepared(output, model, frame_ids, fps, float(source["smpl_scale"].reshape(-1)[0]),
         np.asarray(source["source_slots"][:, selected], dtype=np.float32), source_normals,
         body_ids, local_points, local_normals, initial, point_weights, normal_weights,
         qpos_lower, qpos_upper, identity,
@@ -400,10 +600,25 @@ def prepare_config(config_path, *, source_python=None) -> Prepared:
          "source_data": str(args.data), "source_sequence_key": str(seq_key),
          "source_format": str(sequence.get("source_format", source_format)),
          "ground_z": float(source["ground_z"].reshape(-1)[0]),
-         "source_feature_cache": str(cache), "selected_slot_count": len(selected),
+         "source_feature_cache": str(cache), "source_feature_cache_hit": cached,
+         "source_feature_backend": "resident_cuda" if source_device is not None else "cpu",
+         "prepared_memory_hit": False, "robot_binding_memory_hit": binding_hit,
+         "selected_slot_count": len(selected),
          "controlled_dof": int(model.nu), "selected_head_targets": 0 if revision else -1,
          "source_runtime_sha256": provenance.json_sha256(source_runtime)},
         time.monotonic() - began, joint_weights, revision, args, limits)
+    if source_bundle is not None:
+        from .gpu_source_adapter import finish_source_features
+        finish_source_features(prepared, source_bundle, config_path,
+            reference_normals=reference[selected] if args.surface_normal_cost_mode == 'tpose_offset' else None,
+            context=source_context)
+    prepared.preparation_seconds = time.monotonic() - began
+    if context is not None:
+        context.prepared[source_signature] = prepared
+        # Retain a small recent working set, not every motion in a long dataset.
+        while len(context.prepared) > 8:
+            context.prepared.pop(next(iter(context.prepared)))
+    return prepared
 
 
 def _group_key(prepared):

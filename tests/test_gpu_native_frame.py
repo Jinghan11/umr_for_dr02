@@ -8,17 +8,24 @@ from motion_retargeting.umr.gpu_native_frame import NativeKinematics, assemble_n
 
 MODEL=Path(os.environ.get('UMR_ROLL2_TEST_MODEL', str(Path(__file__).resolve().parents[1]/'artifacts/soma_29dof_roll_v1/models/scene_ff19d97f8a7e7938.xml')))
 requires_model=pytest.mark.skipif(not MODEL.is_file(),reason='set UMR_ROLL2_TEST_MODEL to verified 29DOF scene')
+DEVICES = ['cpu', pytest.param('cuda:0', marks=pytest.mark.skipif(
+    not torch.cuda.is_available(), reason='CUDA unavailable'))]
+
+
+def as_numpy(value):
+    return value.detach().cpu().numpy()
 
 
 @requires_model
-def test_29dof_slots_and_jacobians_against_mujoco():
-    model=mujoco.MjModel.from_xml_path(str(MODEL)); k=NativeKinematics(model)
+@pytest.mark.parametrize('device', DEVICES)
+def test_29dof_slots_and_jacobians_against_mujoco(device):
+    model=mujoco.MjModel.from_xml_path(str(MODEL)); k=NativeKinematics(model,device=device)
     rng=np.random.default_rng(493)
     q=np.repeat(model.qpos0[None],3,axis=0); q[:,7:]=rng.uniform(-.15,.15,(3,29)); q[:,:3]=rng.normal(size=(3,3))
     q[:,3:7]=rng.normal(size=(3,4)); q[:,3:7]/=np.linalg.norm(q[:,3:7],axis=1)[:,None]
     ids=np.array([1,3,6,10,15,20,model.nbody-1]); points=rng.normal(size=(len(ids),3))*.1
     normals=rng.normal(size=(len(ids),3)); normals/=np.linalg.norm(normals,axis=1)[:,None]
-    p,n,jp,jn=(x.detach().numpy() for x in k.evaluate(torch.tensor(q),ids,points,normals))
+    p,n,jp,jn=(as_numpy(x) for x in k.evaluate(torch.tensor(q,device=device),ids,points,normals))
     d=mujoco.MjData(model)
     for b in range(len(q)):
         d.qpos[:]=q[b]; mujoco.mj_forward(model,d)
@@ -62,22 +69,25 @@ def test_complete_selected_objective_matches_independent_numpy_rows():
 
 
 @requires_model
-def test_integrate_29_matches_mujoco():
+@pytest.mark.parametrize('device', DEVICES)
+def test_integrate_29_matches_mujoco(device):
     from motion_retargeting.umr.gpu_native_frame import integrate_29dof
     model=mujoco.MjModel.from_xml_path(str(MODEL)); rng=np.random.default_rng(819)
     q=np.repeat(model.qpos0[None],5,axis=0); q[:,3:7]=rng.normal(size=(5,4)); q[:,3:7]/=np.linalg.norm(q[:,3:7],axis=1)[:,None]
     q[:,7:]=rng.uniform(-.1,.1,(5,29)); vel=rng.normal(size=(5,35))*.1
     lo=np.full(29,-np.inf); hi=np.full(29,np.inf)
-    actual=integrate_29dof(torch.tensor(q),torch.tensor(vel),torch.tensor(lo),torch.tensor(hi)).numpy()
+    actual=as_numpy(integrate_29dof(torch.tensor(q,device=device),torch.tensor(vel,device=device),
+        torch.tensor(lo,device=device),torch.tensor(hi,device=device)))
     for i in range(5):
         expected=q[i].copy(); mujoco.mj_integratePos(model,expected,vel[i],1.)
         np.testing.assert_allclose(actual[i],expected,atol=2e-12)
 
 
 @requires_model
-def test_sequential_batch_preserves_per_clip_state_and_outer_counts():
+@pytest.mark.parametrize('device', DEVICES)
+def test_sequential_batch_preserves_per_clip_state_and_outer_counts(device):
     from motion_retargeting.umr.gpu_native_frame import solve_sequential_batch
-    model=mujoco.MjModel.from_xml_path(str(MODEL)); initial=torch.tensor(np.repeat(model.qpos0[None],2,axis=0)); seen=[]
+    model=mujoco.MjModel.from_xml_path(str(MODEL)); initial=torch.tensor(np.repeat(model.qpos0[None],2,axis=0),device=device); seen=[]
     class Adapter:
         def begin_frame(self,frame,ids,q,states):
             for i,s in zip(ids,states):
@@ -86,17 +96,33 @@ def test_sequential_batch_preserves_per_clip_state_and_outer_counts():
                 s['frames']+=1
         def linearize(self,frame,iteration,ids,q,p,p2,states):
             seen.append((frame,iteration,tuple(ids),p is not None,p2 is not None))
-            n=len(ids); H=torch.eye(35,dtype=q.dtype).repeat(n,1,1); g=torch.zeros((n,35),dtype=q.dtype)
-            lo=torch.full_like(g,-1.); hi=torch.full_like(g,1.); A=torch.empty((n,0,35),dtype=q.dtype); b=torch.empty((n,0),dtype=q.dtype)
+            if frame:
+                expected_previous=initial[ids].clone()
+                expected_previous[:,0]+=q.new_tensor([(.06 if frame==1 else .14)*(i+1) for i in ids])
+                torch.testing.assert_close(p,expected_previous,atol=1e-7,rtol=0)
+            if frame==2:
+                expected_previous2=initial[ids].clone()
+                expected_previous2[:,0]+=q.new_tensor([.06*(i+1) for i in ids])
+                torch.testing.assert_close(p2,expected_previous2,atol=1e-7,rtol=0)
+            n=len(ids); H=torch.eye(35,dtype=q.dtype,device=q.device).repeat(n,1,1); g=q.new_zeros((n,35))
+            # Independent clips take distinct, nonzero root steps at every frame.
+            # H=I gives the analytic minimizer -g, inside every step bound.
+            g[:,0]=q.new_tensor([-.02*(i+1)*(frame+1) for i in ids])
+            lo=torch.full_like(g,-1.); hi=torch.full_like(g,1.); A=q.new_empty((n,0,35)); b=q.new_empty((n,0))
             return H,g,lo,hi,A,b,b,[]
-    out,diag=solve_sequential_batch(initial,[1,3],Adapter(),torch.full((29,),-torch.inf),torch.full((29,),torch.inf),initial_iterations=3,frame_iterations=2)
+    out,diag=solve_sequential_batch(initial,[1,3],Adapter(),initial.new_full((29,),-torch.inf),initial.new_full((29,),torch.inf),initial_iterations=3,frame_iterations=2,fallback=False)
     assert [len(x) for x in out]==[1,3] and diag['step_count']==10 and diag['fallback_count']==0
     assert seen[-1] == (2,1,(1,),True,True)
-    torch.testing.assert_close(out[0][0],initial[0])
+    assert all(trajectory.device == initial.device for trajectory in out)
+    expected_short=initial[0].clone(); expected_short[0]+=.06
+    torch.testing.assert_close(out[0][0],expected_short,atol=1e-7,rtol=0)
+    expected_long=initial[1].repeat(3,1); expected_long[:,0]+=initial.new_tensor([.12,.28,.52])
+    torch.testing.assert_close(out[1],expected_long,atol=1e-7,rtol=0)
 
 
 @requires_model
-def test_native_qinit_frame_objective_and_ground_rows_against_upstream(monkeypatch):
+@pytest.mark.parametrize('device', DEVICES)
+def test_native_qinit_frame_objective_and_ground_rows_against_upstream(monkeypatch,device):
     """Intercept the actual CPU frame loop at the same model/qpos and inputs."""
     import sys
     from types import SimpleNamespace
@@ -138,22 +164,22 @@ def test_native_qinit_frame_objective_and_ground_rows_against_upstream(monkeypat
     for idx,gid in enumerate(geoms):
         rotation=np.empty(9); mujoco.mju_quat2Mat(rotation,m.geom_quat[gid]); rotation=rotation.reshape(3,3)
         bp.append(m.geom_pos[gid]+rotation@lp[idx]); bn.append(rotation@ln[idx])
-    kin=NativeKinematics(m); point,normal,jp,jn=kin.evaluate(torch.tensor(q[None]),body,np.array(bp),np.array(bn))
+    kin=NativeKinematics(m,device=device); point,normal,jp,jn=kin.evaluate(torch.tensor(q[None],device=device),body,np.array(bp),np.array(bn))
     ids=np.where(gd<=.1)[0]; aids=np.where(np.isclose(gd,0,atol=1e-8))[0]
     strength=lambda x: np.clip((.1-gd[x])/.1,.05,1.)
-    t=lambda x:torch.tensor(x,dtype=torch.float64)
+    t=lambda x:torch.tensor(x,dtype=torch.float64,device=device)
     H,g,_,_=assemble_native_objective(point=point,normal=normal,point_jac=jp,normal_jac=jn,
         source_point=t(src[None]),source_normal=t(sn[None]),point_cost=t(pc[None]),normal_cost=t(nc[None]),
         qpos_scalar=t(q[None,qadd]),scalar_dofs=dadd,joint_weights=t(weights(m,qadd,2.)),neutral_cost=.12,
         previous_scalar=t(prev[None,qadd]),previous2_scalar=t(prev2[None,qadd]),smooth_cost=.3,temporal_cost=.17,
-        pair_ids=torch.tensor(pairs[None]),pair_distance=t(pd[None]),pair_weight=t(pw[None]),self_contact_cost=.8,
-        ground_ids=torch.tensor(ids[None]),ground_target=t(gd[None,ids]),ground_row_cost=t((.4*strength(ids))[None]),
-        anchor_ids=torch.tensor(aids[None]),anchor_target=t(np.array([[anchor[int(i)] for i in aids]])),
+        pair_ids=torch.tensor(pairs[None],device=device),pair_distance=t(pd[None]),pair_weight=t(pw[None]),self_contact_cost=.8,
+        ground_ids=torch.tensor(ids[None],device=device),ground_target=t(gd[None,ids]),ground_row_cost=t((.4*strength(ids))[None]),
+        anchor_ids=torch.tensor(aids[None],device=device),anchor_target=t(np.array([[anchor[int(i)] for i in aids]])),
         anchor_row_cost=t((.7*strength(aids))[None]),damping=.02)
-    np.testing.assert_allclose(H[0],captured['J'].T@captured['J']+.02*np.eye(m.nv),atol=2e-11)
-    np.testing.assert_allclose(g[0],captured['J'].T@captured['r'],atol=2e-11)
-    np.testing.assert_allclose(captured['ineq_A'],-jp[0,:,2,:].numpy(),atol=2e-12)
-    np.testing.assert_allclose(captured['ineq_b'],point[0,:,2].numpy()-.005,atol=2e-12)
+    np.testing.assert_allclose(as_numpy(H[0]),captured['J'].T@captured['J']+.02*np.eye(m.nv),atol=2e-11)
+    np.testing.assert_allclose(as_numpy(g[0]),captured['J'].T@captured['r'],atol=2e-11)
+    np.testing.assert_allclose(captured['ineq_A'],-as_numpy(jp[0,:,2,:]),atol=2e-12)
+    np.testing.assert_allclose(captured['ineq_b'],as_numpy(point[0,:,2])-.005,atol=2e-12)
 
     # Same QP and bounds: use the unmodified upstream Clarabel as an independent oracle.
     from motion_retargeting.umr.gpu_native_qp import solve_batched_step
@@ -164,7 +190,7 @@ def test_native_qinit_frame_objective_and_ground_rows_against_upstream(monkeypat
         t(captured['ineq_A'][None]),t(captured['ineq_b'][None]),t(captured['ineq_soft_costs'][None]),
         balls=[(list(ids),radius) for ids,radius,_ in captured['l2_step_limits']],fallback=True)
     assert qp.converged.all()
-    np.testing.assert_allclose(qp.x[0],reference,atol=2e-5,rtol=0)
+    np.testing.assert_allclose(as_numpy(qp.x[0]),reference,atol=2e-5,rtol=0)
 
     # Verify the actual adapter maps source cache, anchors, costs and bounds.
     from motion_retargeting.umr.gpu_native_adapter import NativeClip, NativeFrameAdapter
@@ -173,12 +199,12 @@ def test_native_qinit_frame_objective_and_ground_rows_against_upstream(monkeypat
         source_normals=sn[None],joint_weights=weights(m,qadd,2.),joint_limits=None,identity={'source_features_sha256':'expected'})
     cached=dict(source_slots=src[None],ground=gd[None],ground_weights=gd[None],selected_slot_ids=np.arange(S),
         self_contact_pair_ids=pairs[None],self_contact_distances=pd[None],self_contact_weights=pw[None],self_contact_counts=np.array([len(pairs)]))
-    adapter=NativeFrameAdapter([NativeClip(fake,cached,template)])
+    adapter=NativeFrameAdapter([NativeClip(fake,cached,template)],device=device)
     st=[{}]; adapter.begin_frame(0,[0],t(q[None]),st)
     ah,ag,alo,ahi,aA,ab,ac,_=adapter.linearize(0,0,[0],t(q[None]),t(prev[None]),t(prev2[None]),st)
-    np.testing.assert_allclose(ah[0],H[0],atol=2e-11); np.testing.assert_allclose(ag[0],g[0],atol=2e-11)
-    np.testing.assert_allclose(alo[0],captured['lower']); np.testing.assert_allclose(ahi[0],captured['upper'])
-    np.testing.assert_allclose(aA[0],captured['ineq_A'],atol=2e-12); np.testing.assert_allclose(ab[0],captured['ineq_b'],atol=2e-12)
+    np.testing.assert_allclose(as_numpy(ah[0]),as_numpy(H[0]),atol=2e-11); np.testing.assert_allclose(as_numpy(ag[0]),as_numpy(g[0]),atol=2e-11)
+    np.testing.assert_allclose(as_numpy(alo[0]),captured['lower']); np.testing.assert_allclose(as_numpy(ahi[0]),captured['upper'])
+    np.testing.assert_allclose(as_numpy(aA[0]),captured['ineq_A'],atol=2e-12); np.testing.assert_allclose(as_numpy(ab[0]),captured['ineq_b'],atol=2e-12)
     assert adapter.ground_stats['slot_torch']==1 and adapter.ground_stats['slot_cpu_mismatch_fallback']==0
     original_evaluate=adapter.kin.evaluate
     def corrupt(*args,**kwargs):
@@ -188,16 +214,16 @@ def test_native_qinit_frame_objective_and_ground_rows_against_upstream(monkeypat
     adapter.kin.evaluate=corrupt
     _,_,_,_,fallback_A,fallback_b,_,_=adapter.linearize(0,0,[0],t(q[None]),t(prev[None]),t(prev2[None]),st)
     assert adapter.ground_stats['slot_cpu_mismatch_fallback']==1
-    np.testing.assert_allclose(fallback_A[0],captured['ineq_A'],atol=2e-12)
-    np.testing.assert_allclose(fallback_b[0],captured['ineq_b'],atol=2e-12)
+    np.testing.assert_allclose(as_numpy(fallback_A[0]),captured['ineq_A'],atol=2e-12)
+    np.testing.assert_allclose(as_numpy(fallback_b[0]),captured['ineq_b'],atol=2e-12)
     override={'source_points':t(src[None]+.01),'source_normals':t(sn[None]),
               'selected_slot_ids':np.arange(S),'frame_ids':np.arange(1),
               'source_features_sha256':'expected','binding_sha256':'verified'}
-    bound=NativeFrameAdapter([NativeClip(fake,cached,template)],source_overrides=[override])
+    bound=NativeFrameAdapter([NativeClip(fake,cached,template)],device=device,source_overrides=[override])
     states=[{}]; bound.begin_frame(0,[0],t(q[None]),states)
     oh,og,*_=bound.linearize(0,0,[0],t(q[None]),t(prev[None]),t(prev2[None]),states)
-    np.testing.assert_allclose(oh[0],H[0],atol=2e-11)
-    assert not np.allclose(og[0],g[0],atol=1e-6)
+    np.testing.assert_allclose(as_numpy(oh[0]),as_numpy(H[0]),atol=2e-11)
+    assert not np.allclose(as_numpy(og[0]),as_numpy(g[0]),atol=1e-6)
     invalid=dict(override,source_features_sha256='other')
     with pytest.raises(ValueError,match='fingerprint'):
-        NativeFrameAdapter([NativeClip(fake,cached,template)],source_overrides=[invalid])
+        NativeFrameAdapter([NativeClip(fake,cached,template)],device=device,source_overrides=[invalid])

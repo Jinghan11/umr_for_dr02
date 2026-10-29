@@ -189,9 +189,15 @@ def test_config_to_resident_targets_with_rebuilt_bindings(fake, tmp_path, monkey
     body_names = ['LeftFoot', 'LeftToeBase', 'LeftToeEnd', 'RightFoot', 'RightToeBase', 'RightToeEnd']
     template = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], dtype=np.float32)
     faces = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int32)
-    soma.soma_template_vertices_joints_faces = lambda sequence: (template, None, faces, {'joint_short_names': body_names})
+    def static_soma_template(sequence):
+        assert sequence['soma_device'] == 'cpu'
+        return template, None, faces, {'joint_short_names': body_names}
+    soma.soma_template_vertices_joints_faces = static_soma_template
     resident = ResidentSoma(seq, 'cpu', soma)
     native = resident.forward([0, 1], 'native')
+    # The static CPU binding must not inherit the resident motion's CUDA marker.
+    resident.sequence['soma_device'] = 'cuda:0'
+    monkeypatch.setenv('UMR_SOMA_DEVICE', 'cuda:0')
     bary = np.array([[.2, .3, .5], [.1, .4, .5]], dtype=np.float32)
     targets = surface_features(native, [0, 1], bary, template)['points'].numpy()
     config = tmp_path / 'config.json'; config.write_text('{}')
@@ -209,10 +215,15 @@ def test_config_to_resident_targets_with_rebuilt_bindings(fake, tmp_path, monkey
         stride=1, max_frames=0, config_data={}, smplx_model_dir='', smpl_name='auto',
         robot_name='robot', slots='slots', slots_field='field', bind_nearest_vertex_k=1,
         surface_normal_cost_mode='direct', zero_source_finger_pose=True)
+    def static_source_template(sequence, *args, **kwargs):
+        import os
+        assert sequence['soma_device'] == 'cpu'
+        assert os.environ['UMR_SOMA_DEVICE'] == 'cpu'
+        return template, template, faces, body_names, 'soma'
     common = SimpleNamespace(load_motion_collection=lambda _: ({'test': seq}, 'soma'),
         select_sequence=lambda collection, key, idx: ('test', dict(seq, fps=50.)),
         sequence_frame_count=lambda _: 2, slice_frames=lambda *a: np.arange(2),
-        source_template_vertices_joints_faces=lambda *a, **k: (template, template, faces, body_names, 'soma'),
+        source_template_vertices_joints_faces=static_source_template,
         load_slot_data=lambda *a: (np.zeros((2, 3),np.float32), 'model_origin', 'name'),
         center_source_template=lambda v, j, *a, **k: (v,j,np.zeros(3)),
         bind_points_to_mesh=lambda: None, dynamic_surface_template_to_world=lambda: None)
@@ -233,6 +244,17 @@ def test_config_to_resident_targets_with_rebuilt_bindings(fake, tmp_path, monkey
     assert result['binding_reference_max_abs_m'] < 1e-7
     assert len(result['binding_sha256']) == 64
     assert result['source_sole_points_human_m'].shape == (2,2,2,3)
+    import os
+    assert os.environ['UMR_SOMA_DEVICE'] == 'cuda:0'
+    assert resident.sequence['soma_device'] == 'cuda:0'
+    original_binding = batch.bind_source_slots_with_normals
+    def corrupt_labels(*args, **kwargs):
+        values = list(original_binding(*args, **kwargs))
+        values[2] = np.array([10, 21])
+        return tuple(values)
+    batch.bind_source_slots_with_normals = corrupt_labels
+    with pytest.raises(ValueError, match='semantic labels differ'):
+        adapter.source_from_config(config, prepared, device='cuda:0')
 
 
 def test_reduced_microbatch_changes_identity_not_frame_grid(fake):

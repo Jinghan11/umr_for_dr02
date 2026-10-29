@@ -222,23 +222,60 @@ def _difference_adjoint(first, second, size):
 
 
 def _pcg(matvec, rhs, precondition, tolerance, max_iterations):
+    """Keep per-step convergence on-device and read status once per small block.
+
+    An iterate freezes at its first successful residual check, preserving the
+    original stopping tolerance even while the rest of a CUDA block executes.
+    Invalid curvature or nonfinite arithmetic freezes the last finite iterate
+    and reports failure at the next host check.
+    """
     x = torch.zeros_like(rhs)
     r = rhs.clone(); z = precondition(r); direction = z.clone()
     rz = (r * z).sum(); initial = torch.linalg.vector_norm(r)
-    if initial.item() == 0:
+    initial_value = initial.item()
+    if initial_value == 0:
         return x, 0, True
+    if not np.isfinite(initial_value):
+        return x, 0, False
+    active = torch.ones((), dtype=torch.bool, device=rhs.device)
+    failed = torch.zeros_like(active)
+    completed = torch.zeros((), dtype=torch.int64, device=rhs.device)
+    zero = torch.zeros_like(rhs)
+    check_interval = 8 if rhs.device.type == 'cuda' else 1
     for index in range(max_iterations):
         product = matvec(direction)
         denominator = (direction * product).sum()
-        if not torch.isfinite(denominator) or denominator.item() <= 0:
-            return x, index, False
-        alpha = rz / denominator
-        x = x + alpha * direction; r = r - alpha * product
-        if torch.linalg.vector_norm(r).item() <= tolerance * initial.item():
-            return x, index + 1, True
-        z = precondition(r); new_rz = (r * z).sum()
-        direction = z + new_rz / rz * direction
-        rz = new_rz
+        valid_denominator = torch.isfinite(denominator) & (denominator > 0) & torch.isfinite(rz)
+        advancing = active & valid_denominator
+        failed = failed | (active & ~valid_denominator)
+        alpha = torch.where(advancing, rz, 0.) / torch.where(valid_denominator, denominator, 1.)
+        next_x = x + alpha * direction
+        next_r = r - alpha * product
+        residual_norm = torch.linalg.vector_norm(next_r)
+        finite_step = torch.isfinite(residual_norm) & torch.isfinite(next_x).all()
+        failed = failed | (advancing & ~finite_step)
+        advancing = advancing & finite_step
+        x = torch.where(advancing, next_x, x)
+        r = torch.where(advancing, next_r, r)
+        completed = completed + advancing.to(dtype=torch.int64)
+        active = advancing & (residual_norm > tolerance * initial_value)
+        # Inactive lanes stay finite; no host decision is needed after a zero
+        # residual, failed denominator, or a previously converged iterate.
+        z = precondition(torch.where(active, r, zero))
+        new_rz = (r * z).sum()
+        valid_ratio = torch.isfinite(new_rz) & torch.isfinite(rz) & (rz != 0)
+        failed = failed | (active & ~valid_ratio)
+        active = active & valid_ratio
+        beta = torch.where(active, new_rz, 0.) / torch.where(valid_ratio, rz, 1.)
+        direction = torch.where(active, z + beta * direction, zero)
+        rz = torch.where(active, new_rz, 1.)
+        if (index + 1) % check_interval == 0 or index + 1 == max_iterations:
+            running, invalid, iterations = torch.stack((active.to(dtype=torch.int64),
+                failed.to(dtype=torch.int64), completed)).tolist()
+            if invalid:
+                return x, iterations, False
+            if not running:
+                return x, iterations, True
     return x, max_iterations, False
 
 
@@ -275,6 +312,10 @@ def solve_bounded_contact(problem, initial, lower, upper, *, max_iterations=60,
     initial_cost = float(problem.cost(x).item()); cost = initial_cost
     accepted = failures = 0; converged = False; reason = "iteration_budget"
     mu = float(damping)
+    # These weights are fixed for the complete motion and every PCG iteration.
+    velocity_scale_sq = problem.velocity_scale.square()
+    acceleration_scale_sq = problem.acceleration_scale.square()
+    neutral_scale_sq = problem.neutral_scale.square()
     for iteration in range(max_iterations):
         residual, jac, vel, acc, neutral = problem.evaluate(x)
         grad = torch.einsum('tri,tr->ti', jac, residual)
@@ -290,17 +331,17 @@ def solve_bounded_contact(problem, initial, lower, upper, *, max_iterations=60,
             v = v * free
             frame = torch.einsum('tri,ti->tr', jac, v)
             out = torch.einsum('tri,tr->ti', jac, frame)
-            dv = (v[1:] - v[:-1]) * problem.velocity_scale.square()
-            da = (v[2:] - 2*v[1:-1] + v[:-2]) * problem.acceleration_scale.square()
-            out = out + _difference_adjoint(dv, da, len(x)) + (problem.neutral_scale.square() + mu) * v
+            dv = (v[1:] - v[:-1]) * velocity_scale_sq
+            da = (v[2:] - 2*v[1:-1] + v[:-2]) * acceleration_scale_sq
+            out = out + _difference_adjoint(dv, da, len(x)) + (neutral_scale_sq + mu) * v
             return torch.where(free, out, original)
         # Each block contains the local normal matrix and temporal diagonal;
         # adjacent-frame temporal couplings remain in the matrix-free operator.
-        diag = (problem.neutral_scale.square() + mu).expand_as(x).clone()
+        diag = (neutral_scale_sq + mu).expand_as(x).clone()
         if len(x) > 1:
-            diag[:-1] += problem.velocity_scale.square(); diag[1:] += problem.velocity_scale.square()
+            diag[:-1] += velocity_scale_sq; diag[1:] += velocity_scale_sq
         if len(x) > 2:
-            diag[:-2] += problem.acceleration_scale.square(); diag[1:-1] += 4*problem.acceleration_scale.square(); diag[2:] += problem.acceleration_scale.square()
+            diag[:-2] += acceleration_scale_sq; diag[1:-1] += 4*acceleration_scale_sq; diag[2:] += acceleration_scale_sq
         blocks = torch.einsum('tri,trj->tij', jac, jac) + torch.diag_embed(diag)
         blocks = blocks * free[..., :, None] * free[..., None, :] + torch.diag_embed((~free).to(x.dtype))
         chol, info = torch.linalg.cholesky_ex(blocks)

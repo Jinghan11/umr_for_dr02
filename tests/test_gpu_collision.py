@@ -120,25 +120,27 @@ class CollisionTests(unittest.TestCase):
         self.assertEqual(result.report['policy']['effective_self_margin_m'], 0.0)
         self.assertGreaterEqual(result.report['frames'][0]['self_min_distance_m'], -1e-6)
 
-    def test_penetrating_mesh_capsule_stall_retries_true_signed_distance_gradient(self):
+    def test_penetrating_mesh_capsule_witness_order_matches_signed_distance_gradient(self):
         p = self.projector(MESH_CAPSULE)
         q = p.model.qpos0.copy()
-        oracle_rows = p.evaluate_frame(q)
-        # Original oracle has the wrong closest-point normal orientation for
-        # this negative mesh/capsule distance; its rows remain unchanged.
-        np.testing.assert_allclose(oracle_rows.distances, [-.02], atol=1e-7)
-        actual_gradient, active = p._signed_distance_jacobian(q, oracle_rows.pairs[0])
-        self.assertLess(float(oracle_rows.jacobians[0] @ actual_gradient), -.1)
+        rows = p.evaluate_frame(q)
+        np.testing.assert_allclose(rows.distances, [-.02], atol=1e-7)
+        actual_gradient, active = p._signed_distance_jacobian(q, rows.pairs[0])
+        np.testing.assert_allclose(rows.jacobians[0], actual_gradient, rtol=1e-5, atol=1e-6)
+        self.assertGreater(float(rows.jacobians[0] @ actual_gradient), .1)
         self.assertEqual(active, [0, 1])
+        # Unequal generic-convex types must restore witnesses to the retained
+        # pair order, including MuJoCo's native CCD early-return path.
+        reverse_witness = np.zeros(6)
+        reverse_distance = p._geometry_distance(
+            rows.pairs[0][::-1], p.self_threshold, reverse_witness)
+        self.assertEqual(reverse_distance, rows.distances[0])
+        np.testing.assert_array_equal(
+            reverse_witness, rows.witnesses[0, [3, 4, 5, 0, 1, 2]])
         result = p.project_trajectory(np.repeat(q[None], 3, axis=0))
         self.assertTrue(result.report['passed'])
         self.assertEqual(result.report['failed_frames'], [])
-        retries = result.report['stalled_distance_jacobian_fallbacks']
-        self.assertEqual([retry['frame'] for retry in retries], [0, 1, 2])
-        self.assertTrue(all(retry['retry_improved'] for retry in retries))
-        self.assertTrue(all(retry['changed_rows'][0]['cosine'] < -.99 for retry in retries))
-        self.assertIn('stalled_violating_distance_FD_v2', result.report['policy']['derivative_policy'])
-        np.testing.assert_array_equal(p.evaluate_frame(q).jacobians, oracle_rows.jacobians)
+        np.testing.assert_array_equal(p.evaluate_frame(q).jacobians, rows.jacobians)
         self.assertLessEqual(float(np.max(np.abs(result.qpos))), .3+1e-9)
 
     def test_accurate_signed_distance_rows_are_preserved(self):

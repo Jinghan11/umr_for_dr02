@@ -27,6 +27,13 @@ _CUDA = False
 
 
 @dataclass(frozen=True)
+class ActorClipFailure:
+    """Explicit per-clip failure returned alongside successful actor outputs."""
+    error: str
+    stage: str = 'solve'
+
+
+@dataclass(frozen=True)
 class ExecutorConfig:
     devices: tuple[int, ...] = (0,)
     memory_gib: float = 8.
@@ -76,7 +83,33 @@ def _nvml_process_bytes(device, pid):
 
 def _init_worker(device, factory, budget_gib, reserve_gib, enable_cuda):
     global _HANDLER, _DEVICE, _BUDGET, _CUDA
-    os.environ['CUDA_VISIBLE_DEVICES'] = str(device) if enable_cuda else ''
+    if enable_cuda:
+        # Scheduler/container masks may use UUIDs and CUDA enumeration need not
+        # match NVML's physical index. Resolve the authorized physical device
+        # once and keep that stable identity in the child CUDA mask.
+        queried = subprocess.run(['nvidia-smi', '-i', str(device),
+            '--query-gpu=uuid', '--format=csv,noheader'],
+            capture_output=True, text=True, check=True, timeout=10)
+        uuid = queried.stdout.strip()
+        if not uuid.startswith('GPU-') or '\n' in uuid:
+            raise RuntimeError(f'GPU {device}: cannot resolve its physical UUID')
+        inherited = os.environ.get('CUDA_VISIBLE_DEVICES')
+        if inherited is not None:
+            allowed = set()
+            for token in inherited.split(','):
+                token = token.strip()
+                if token.startswith('GPU-'):
+                    allowed.add(token)
+                elif token.isdigit():
+                    visible = subprocess.run(['nvidia-smi', '-i', token,
+                        '--query-gpu=uuid', '--format=csv,noheader'],
+                        capture_output=True, text=True, check=True, timeout=10)
+                    allowed.add(visible.stdout.strip())
+            if not any(uuid == value or uuid.startswith(value) for value in allowed):
+                raise RuntimeError(f'GPU {device}: outside inherited CUDA visibility')
+        os.environ['CUDA_VISIBLE_DEVICES'] = uuid
+    else:
+        os.environ['CUDA_VISIBLE_DEVICES'] = ''
     _DEVICE, _BUDGET, _CUDA = device, int(budget_gib * (1 << 30)), enable_cuda
     if enable_cuda:
         import torch
@@ -124,6 +157,7 @@ def _compute_batch(payloads, oom_attempts=0):
             except Exception: os._exit(79)
     watcher = threading.Thread(target=monitor, daemon=True) if _CUDA else None
     if watcher: watcher.start()
+    values = None
     try:
         values = _HANDLER.run_batch(payloads)
         if not isinstance(values, (list, tuple)) or len(values) != len(payloads):
@@ -134,37 +168,58 @@ def _compute_batch(payloads, oom_attempts=0):
             peak[0] = max(peak[0], after)
             if after > _BUDGET: raise RuntimeError(f'GPU {_DEVICE}: process memory exceeded budget')
         else: after = None
-        return ([{'ok':True,'value':v} for v in values],
+        return ([{'ok':False,'error':v.error,'stage':v.stage,'retryable':False} if isinstance(v, ActorClipFailure)
+                 else {'ok':True,'value':v} for v in values],
                 {'device':_DEVICE,'process_memory_before_bytes':before,
                  'process_memory_after_bytes':after,'sampled_peak_process_memory_bytes':peak[0],
                  'wall_seconds':time.monotonic()-began,'attempts':1,'retries':0})
     except Exception as exc:
-        stop_monitor.set()
-        if watcher: watcher.join()
-        attempt_seconds=time.monotonic()-began
+        # Keep only scalar error metadata. Retrying inside this except block
+        # retains the actor traceback and its live tensors, defeating OOM relief.
         oom=torch is not None and isinstance(exc,torch.cuda.OutOfMemoryError)
-        if oom:
-            torch.cuda.empty_cache()
-            shrink=getattr(_HANDLER,'reduce_microbatch',None)
-            if oom_attempts < 8 and callable(shrink) and shrink():
-                out, child = _compute_batch(payloads,oom_attempts+1)
-                return out, {'device':_DEVICE,'reason':'oom_microbatch','attempt_seconds':attempt_seconds,
-                             'wall_seconds':time.monotonic()-began,'attempts':1+child['attempts'],
-                             'retries':1+child['retries'],'children':[child]}
-        if len(payloads)>1:
-            middle=len(payloads)//2
-            left,lm=_compute_batch(payloads[:middle],oom_attempts)
-            right,rm=_compute_batch(payloads[middle:],oom_attempts)
-            return left+right, {'device':_DEVICE,'reason':'oom_split' if oom else 'failure_isolation',
-                'error':f'{type(exc).__name__}: {exc}','attempt_seconds':attempt_seconds,
-                'wall_seconds':time.monotonic()-began,'attempts':1+lm['attempts']+rm['attempts'],
-                'retries':2+lm['retries']+rm['retries'],'children':[lm,rm]}
-        return [{'ok':False,'error':f'{type(exc).__name__}: {exc}'}], {
-            'device':_DEVICE,'attempt_seconds':attempt_seconds,'wall_seconds':time.monotonic()-began,
-            'attempts':1,'retries':0}
+        error=f'{type(exc).__name__}: {exc}'
+        terminal_stage = (getattr(_HANDLER, 'execution_stage', None)
+                          if values is None else 'post_result_validation')
     finally:
         stop_monitor.set()
         if watcher: watcher.join()
+    attempt_seconds=time.monotonic()-began
+    if os.environ.get('UMR_GPU_PROGRESS_JSONL'):
+        label = ('[Resident batch terminal failure]' if terminal_stage in
+                 ('publication', 'complete', 'post_result_validation') else '[Resident batch retry]')
+        print(label, {'clips':len(payloads),'oom':oom,'seconds':attempt_seconds,
+                      'stage':terminal_stage,'error':error}, flush=True)
+    # run_batch may have returned tensors before a later validation/sync failed.
+    # Release those outputs as well as the now-unwound exception before retrying.
+    values=None
+    if terminal_stage in ('publication', 'complete', 'post_result_validation'):
+        # A completed solve cannot be recovered by recomputing it. In
+        # particular, report serialization/I/O errors must not recursively
+        # rerun every successful sibling through failure isolation.
+        return ([{'ok':False,'error':error,'stage':terminal_stage,'retryable':False}
+                 for _ in payloads],
+                {'device':_DEVICE,'reason':'terminal_post_solve_failure',
+                 'error':error,'stage':terminal_stage,'attempt_seconds':attempt_seconds,
+                 'wall_seconds':time.monotonic()-began,'attempts':1,'retries':0})
+    if oom:
+        torch.cuda.empty_cache()
+        shrink=getattr(_HANDLER,'reduce_microbatch',None)
+        if oom_attempts < 8 and callable(shrink) and shrink():
+            out, child = _compute_batch(payloads,oom_attempts+1)
+            return out, {'device':_DEVICE,'reason':'oom_microbatch','attempt_seconds':attempt_seconds,
+                         'wall_seconds':time.monotonic()-began,'attempts':1+child['attempts'],
+                         'retries':1+child['retries'],'children':[child]}
+    if len(payloads)>1:
+        middle=len(payloads)//2
+        left,lm=_compute_batch(payloads[:middle],oom_attempts)
+        right,rm=_compute_batch(payloads[middle:],oom_attempts)
+        return left+right, {'device':_DEVICE,'reason':'oom_split' if oom else 'failure_isolation',
+            'error':error,'attempt_seconds':attempt_seconds,
+            'wall_seconds':time.monotonic()-began,'attempts':1+lm['attempts']+rm['attempts'],
+            'retries':2+lm['retries']+rm['retries'],'children':[lm,rm]}
+    return [{'ok':False,'error':error}], {
+        'device':_DEVICE,'attempt_seconds':attempt_seconds,'wall_seconds':time.monotonic()-began,
+        'attempts':1,'retries':0}
 
 
 def _default_group_key(job, prepared):
@@ -234,7 +289,10 @@ def run_pipeline(jobs, prepare, finish, actor_factory, config=ExecutorConfig(), 
                         inflight-=1; continue
                     if not available: break
                     key=ready[0][3]; matching=sum(item[3]==key for item in ready)
-                    if matching<config.batch_clips and preparing and inflight<capacity: break
+                    # Queued preparation is independent of GPU completion.
+                    # Let it fill the batch even when the bounded input queue
+                    # is full; otherwise the first ready clip is sent alone.
+                    if matching<config.batch_clips and preparing: break
                     device=min(available,key=counts.get); group=[]; remaining=deque()
                     while ready:
                         item=ready.popleft()
@@ -269,7 +327,7 @@ def run_pipeline(jobs, prepare, finish, actor_factory, config=ExecutorConfig(), 
                             if len(values)!=len(group): raise ValueError('invalid actor result length')
                             for (index,job,_,_,prep_time,job_start),value in zip(group,values):
                                 if not value['ok']:
-                                    results[index]={'status':'failed','stage':'gpu','device':device,'error':value['error'],'prepare_seconds':prep_time,'gpu':metrics,'wall_seconds':time.monotonic()-job_start}; inflight-=1
+                                    results[index]={'status':'failed','stage':'gpu','actor_stage':value.get('stage'),'retryable':value.get('retryable',False),'device':device,'error':value['error'],'prepare_seconds':prep_time,'gpu':metrics,'wall_seconds':time.monotonic()-job_start}; inflight-=1
                                 else:
                                     final=finish_pool.submit(do_finish,job,value['value']); finishing[final]=(index,metrics,prep_time,job_start)
                         except BrokenProcessPool as exc:

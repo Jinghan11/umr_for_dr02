@@ -34,6 +34,8 @@ def main():
     convert.add_argument('--model', type=Path)
     retarget = sub.add_parser('retarget', help='Learn shared correspondence and retarget fitted SMPL-X')
     retarget.add_argument('--data', type=Path, nargs='+', required=True)
+    retarget.add_argument('--initial-trajectories', type=Path, nargs='+',
+                          help='Existing 50 Hz trajectories, one per --data input, used only as joint-SQP iteration starts')
     retarget.add_argument('--model', type=Path)
     retarget.add_argument('--points', type=int, default=1024)
     retarget.add_argument('--epochs', type=int, default=500)
@@ -41,7 +43,7 @@ def main():
     retarget.add_argument('--backend', choices=['qp', 'torch'], default='qp',
                           help='qp: established UMR; torch: experimental parallel SOMA trajectory optimizer')
     retarget.add_argument('--pipeline', choices=['legacy', 'gpu-resident-v2'], default='legacy',
-                          help='Select the opt-in, quality-gated resident GPU experiment')
+                          help='Select the experimental resident joint full-body/contact optimizer (uncertified)')
     retarget.add_argument('--gpu-devices', default='0',
                           help='Comma-separated physical GPU IDs for the resident pipeline (0 and 2 only)')
     retarget.add_argument('--gpu-memory-limit-gib', type=float, default=8.,
@@ -59,7 +61,7 @@ def main():
     retarget.add_argument('--tag', default='dr02')
     retarget.add_argument('--ground-mode', choices=['mujoco_collision','surface_slots_all'], default='mujoco_collision')
     retarget.add_argument('--contact-refine', action=argparse.BooleanOptionalAction, default=True,
-                          help='Preserve source-informed foot contact after UMR/LQR (default: on)')
+                          help='Legacy pipelines: separate foot-contact refinement after UMR/LQR (default: on); resident joint optimization includes contact directly')
     retarget.add_argument('--revision29', choices=['baseline','roll2'])
     retarget.add_argument('--reference-config', type=Path,
                           help='Read-only CPU revision29 contract for experimental Torch comparisons')
@@ -108,8 +110,10 @@ def main():
     elif args.command == 'retarget':
         if args.pipeline == 'gpu-resident-v2':
             if (args.input_type != 'soma' or args.backend != 'torch' or args.device != 'cuda'
-                    or args.revision29 != 'roll2' or not args.contact_refine):
-                parser.error('gpu-resident-v2 requires SOMA, torch, cuda, revision29 roll2 and contact refinement')
+                    or args.revision29 != 'roll2'):
+                parser.error('gpu-resident-v2 requires SOMA, torch, cuda and revision29 roll2')
+            # The legacy refinement switch only controls a separate stage.
+            # Joint mode always optimizes contacts and never launches that stage.
             if args.max_frames or args.template or args.model:
                 parser.error('gpu-resident-v2 requires complete original SOMA motions and matching MHR assets')
             if args.gpu_iterations != 300 or args.gpu_learning_rate != .03 or args.gpu_batch_frames != 256:
@@ -127,12 +131,18 @@ def main():
                        '--gpu-devices', args.gpu_devices, '--gpu-memory-limit-gib', args.gpu_memory_limit_gib,
                        '--batch-clips', args.gpu_batch_clips, '--batch-frames', args.gpu_batch_frames,
                        '--points', args.points, '--epochs', args.epochs, '--tag', args.tag]
+            if args.initial_trajectories is not None:
+                if len(args.initial_trajectories) != len(args.data):
+                    parser.error('--initial-trajectories must contain one file per --data motion')
+                options += ['--initial-trajectories', *[p.resolve() for p in args.initial_trajectories]]
             if args.reference_config: options += ['--reference-config', args.reference_config.resolve()]
             if args.source_python: options += ['--source-python', args.source_python.absolute()]
             if args.gpu_source_cache: options += ['--source-cache', args.gpu_source_cache.resolve()]
             if args.force: options += ['--force']
             execute(METHOD/'run_gpu_resident.py', options)
             return
+        if args.initial_trajectories is not None:
+            parser.error('--initial-trajectories requires --pipeline gpu-resident-v2')
         if args.gpu_devices != '0' or args.gpu_memory_limit_gib != 8. or args.gpu_source_cache:
             parser.error('GPU device/memory/source-cache options require --pipeline gpu-resident-v2')
         if args.backend == 'torch':
