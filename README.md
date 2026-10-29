@@ -1,5 +1,6 @@
 # UMR for DR02 Pro
 
+[Synchronized human / robot review](engineering/umr/human_review/README.md)
 For SONIC-related BONES-SEED retargeting, **prefer the original SOMA version**:
 use BONES-SEED BVH with its matching uniform/proportional MHR shape and SOMA
 assets via `--input-type soma`. Keep GEAR-SONIC's preconverted SMPL release for

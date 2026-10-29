@@ -1,5 +1,6 @@
 # UMR → DR02 Pro
 
+[人体与机器人同步回放](engineering/umr/human_review/README.md)
 **SONIC / BONES-SEED 输入选择：优先使用 SOMA 原始版本**（BONES-SEED 原始 BVH＋匹配的
 uniform / proportional MHR 体型＋SOMA 模型资产），通过 `--input-type soma` 重定向。
 GEAR-SONIC 预转换 SMPL 用于兼容或对照；其源姿态可能已有不连续性，接触修正不能消除上肢抽动。
