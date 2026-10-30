@@ -112,7 +112,7 @@ class RunIdentityError(RuntimeError):
 
 def verify_worker_identity(contact, frozen_code):
     expected = {Path(path).name: digest for path, digest in frozen_code.items()
-                if Path(path).parent == Path('motion_retargeting/umr') and (Path(path).name.startswith('contact') or Path(path).name == 'soma_legs.py')}
+                if Path(path).parent == Path('motion_retargeting/umr') and (Path(path).name.startswith('contact') or Path(path).name in ('soma_legs.py', 'revision29.py'))}
     if not expected or contact.get('algorithm_sha256') != expected:
         raise RunIdentityError('Worker contact algorithm differs from frozen run identity')
     if code_identity() != frozen_code:

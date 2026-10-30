@@ -125,6 +125,16 @@ class SOMABatchTests(unittest.TestCase):
             self.assertEqual((folder / 'batch.json').read_text(), '{truncated')
             self.assertTrue((output / 'errors/broken.json').is_file())
 
+    def test_revision_module_is_part_of_the_worker_contact_identity(self):
+        code={'motion_retargeting/umr/contact.py':'contact',
+              'motion_retargeting/umr/soma_legs.py':'legs',
+              'motion_retargeting/umr/revision29.py':'revision'}
+        contact={'algorithm_sha256':{'contact.py':'contact','soma_legs.py':'legs','revision29.py':'revision'}}
+        with patch('motion_retargeting.umr.retarget_soma_batch.code_identity',return_value=code):
+            verify_worker_identity(contact,code)
+            contact['algorithm_sha256'].pop('revision29.py')
+            with self.assertRaises(RunIdentityError):verify_worker_identity(contact,code)
+
     def test_deleted_source_invalidates_record_without_escaping(self):
         self.assertFalse(record_valid({'signature': 'v1'}, {'source': '/missing/astra-test.bvh'}, 'v1', Path('/missing')))
 
